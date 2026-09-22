@@ -867,6 +867,82 @@
         }
       }
     },
+    "/api/v1/templates/{template_id}/utility-revision": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Create Utility Revision",
+        "operationId": "create_utility_revision_api_v1_templates__template_id__utility_revision_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "organization_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Organização atual. Padrão: organização única do ambiente.",
+              "title": "Organization Id"
+            },
+            "description": "Organização atual. Padrão: organização única do ambiente."
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/templates/sync": {
       "post": {
         "tags": [
@@ -917,6 +993,92 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SyncResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/templates/{template_id}/test-send": {
+      "post": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "Test Send Template",
+        "operationId": "test_send_template_api_v1_templates__template_id__test_send_post",
+        "parameters": [
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "organization_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Organização atual. Padrão: organização única do ambiente.",
+              "title": "Organization Id"
+            },
+            "description": "Organização atual. Padrão: organização única do ambiente."
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateTestSendRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateTestSendResult"
                 }
               }
             }
@@ -2203,8 +2365,7 @@
                 "type": "null"
               }
             ],
-            "title": "Fewer Than Direct Messages",
-            "default": 3
+            "title": "Fewer Than Direct Messages"
           }
         },
         "type": "object",
@@ -2857,6 +3018,19 @@
           "category": {
             "$ref": "#/components/schemas/TemplateCategory"
           },
+          "requested_category": {
+            "$ref": "#/components/schemas/TemplateCategory"
+          },
+          "correct_category": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TemplateCategory"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "$ref": "#/components/schemas/TemplateStatus"
           },
@@ -2880,6 +3054,33 @@
           "revision": {
             "type": "integer",
             "title": "Revision"
+          },
+          "parent_template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Template Id"
+          },
+          "submission_attempt": {
+            "type": "integer",
+            "title": "Submission Attempt"
+          },
+          "category_changed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Changed At"
           },
           "rejection_reason": {
             "anyOf": [
@@ -2911,11 +3112,16 @@
           "display_name",
           "language",
           "category",
+          "requested_category",
+          "correct_category",
           "status",
           "components",
           "variable_schema",
           "source",
           "revision",
+          "parent_template_id",
+          "submission_attempt",
+          "category_changed_at",
           "rejection_reason",
           "created_at",
           "updated_at"
@@ -2933,6 +3139,54 @@
           "DISABLED"
         ],
         "title": "TemplateStatus"
+      },
+      "TemplateTestSendRequest": {
+        "properties": {
+          "phone_e164": {
+            "type": "string",
+            "title": "Phone E164"
+          },
+          "variables": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Variables"
+          },
+          "confirm_recipient_opt_in": {
+            "type": "boolean",
+            "title": "Confirm Recipient Opt In",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "phone_e164"
+        ],
+        "title": "TemplateTestSendRequest"
+      },
+      "TemplateTestSendResult": {
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted"
+          },
+          "wamid": {
+            "type": "string",
+            "title": "Wamid"
+          },
+          "consecutive_template_sends": {
+            "type": "integer",
+            "title": "Consecutive Template Sends"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted",
+          "wamid",
+          "consecutive_template_sends"
+        ],
+        "title": "TemplateTestSendResult"
       },
       "ValidationError": {
         "properties": {

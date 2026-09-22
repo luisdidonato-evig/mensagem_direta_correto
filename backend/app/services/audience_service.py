@@ -20,6 +20,7 @@ class ContactCandidate(BaseModel):
     direct_messages_90d: int
     has_consent: bool
     opted_out: bool = False
+    frequency_limited: bool = False
     attributes: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
@@ -119,6 +120,8 @@ def evaluate_candidate(
         reasons.append("sem_consentimento")
     if candidate.opted_out:
         reasons.append("opt_out")
+    if candidate.frequency_limited:
+        reasons.append("limite_consecutivo_sem_resposta")
     if rules.no_response_days:
         threshold = datetime.now(UTC) - timedelta(days=rules.no_response_days)
         if candidate.last_customer_reply_at and candidate.last_customer_reply_at > threshold:
@@ -186,6 +189,9 @@ async def apply_persisted_compliance(
             )
         )
     )
+    from app.services.frequency_service import blocked_phone_hashes
+
+    frequency_blocked = await blocked_phone_hashes(db, organization_id, hashes)
     contact_ids = [candidate.id for candidate in candidates]
     consent_rows = list(
         await db.scalars(
@@ -209,6 +215,7 @@ async def apply_persisted_compliance(
         candidate.model_copy(
             update={
                 "opted_out": candidate.opted_out or hash_phone(candidate.phone_e164) in persisted,
+                "frequency_limited": hash_phone(candidate.phone_e164) in frequency_blocked,
                 "has_consent": latest_consent.get(
                     candidate.id, (datetime.min.replace(tzinfo=UTC), candidate.has_consent)
                 )[1],

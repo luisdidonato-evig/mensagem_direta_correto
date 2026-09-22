@@ -24,6 +24,7 @@ export function TemplateCard({ item, onUse, onView, onDelete }: Props) {
         {isTemplate(item) && <span className={`status ${item.status.toLowerCase()}`}>{item.status}</span>}
       </div>
       <h3>{"display_name" in item ? item.display_name : item.name}</h3>
+      {isTemplate(item) && <p className="muted">Meta: {item.name}</p>}
       <p className="description">{"description" in item ? item.description : "Template sincronizado com a conta Meta."}</p>
       <div className="message-snippet">{body}</div>
       {!isTemplate(item) && <div className="reach"><b>{item.estimated_reach.toLocaleString("pt-BR")}</b> pessoas</div>}

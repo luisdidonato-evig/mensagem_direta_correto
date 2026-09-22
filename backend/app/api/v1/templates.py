@@ -1,17 +1,23 @@
+import uuid
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_meta_provider, get_organization_id
-from app.core.auth import Principal, require_operator
+from app.core.auth import Principal, require_admin, require_operator
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
+from app.core.privacy import hash_phone
 from app.integrations.meta.provider import (
     MetaProviderError,
     WhatsAppProvider,
     build_provider_for_connection,
 )
-from app.models.template import MessageTemplate, TemplateStatus
+from app.models.campaign import Campaign
+from app.models.organization import Organization
+from app.models.template import MessageTemplate, TemplateCategory, TemplateStatus
 from app.schemas.campaigns import AudienceRules
 from app.schemas.templates import (
     SyncResult,
@@ -19,12 +25,21 @@ from app.schemas.templates import (
     TemplateDraftUpdate,
     TemplatePreset,
     TemplateRead,
+    TemplateTestSendRequest,
+    TemplateTestSendResult,
 )
 from app.services.audience_service import preview_audience
 from app.services.audit_service import add_audit
+from app.services.frequency_service import (
+    confirm_template_send,
+    release_template_send,
+    reserve_template_send,
+)
 from app.services.idempotency_service import run_idempotent
 from app.services.organization_service import get_waba_connection
 from app.services.template_service import (
+    build_company_meta_name,
+    build_send_components,
     build_variable_examples,
     compile_components,
     sync_templates,
@@ -82,7 +97,7 @@ PRESETS = [
             "conversa inteira para lembrar onde parou."
         ),
         caution="Confirme que o documento pendente ainda é o mesmo antes de disparar.",
-        suggested_rules=AudienceRules(no_response_days=None, fewer_than_direct_messages=3),
+        suggested_rules=AudienceRules(no_response_days=None),
         components=[
             {
                 "type": "BODY",
@@ -153,6 +168,19 @@ async def delete_template(
         raise HTTPException(status_code=404, detail="Template não encontrado")
     if template.status == TemplateStatus.PENDING:
         raise HTTPException(status_code=409, detail="Aguarde a Meta responder antes de excluir")
+    referenced = await db.scalar(
+        select(Campaign.id).where(Campaign.template_id == template.id).limit(1)
+    )
+    child_revision = await db.scalar(
+        select(MessageTemplate.id)
+        .where(MessageTemplate.parent_template_id == template.id)
+        .limit(1)
+    )
+    if referenced or child_revision:
+        raise HTTPException(
+            status_code=409,
+            detail="Template possui campanha ou revisão dependente e não pode ser excluído",
+        )
     if template.meta_template_id is not None:
         connection = await get_waba_connection(db, template.organization_id)
         provider = build_provider_for_connection(
@@ -182,10 +210,14 @@ async def create_draft(
     _: Principal = Depends(require_operator),
 ) -> TemplateRead | dict:
     async def handler() -> TemplateRead:
+        organization = await db.get(Organization, organization_id)
+        if organization is None:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+        meta_name = build_company_meta_name(organization.name, payload.name)
         duplicate = await db.scalar(
             select(MessageTemplate).where(
                 MessageTemplate.organization_id == organization_id,
-                MessageTemplate.name == payload.name,
+                MessageTemplate.name == meta_name,
                 MessageTemplate.language == payload.language,
             )
         )
@@ -195,7 +227,9 @@ async def create_draft(
             )
         template = MessageTemplate(
             organization_id=organization_id,
-            **payload.model_dump(),
+            **payload.model_dump(exclude={"name"}),
+            name=meta_name,
+            requested_category=payload.category,
             status=TemplateStatus.DRAFT,
             source="LOCAL",
         )
@@ -238,6 +272,7 @@ async def update_draft(
         )
     for field, value in payload.model_dump().items():
         setattr(template, field, value)
+    template.requested_category = payload.category
     template.status = TemplateStatus.DRAFT
     template.rejection_reason = None
     template.revision += 1
@@ -268,6 +303,24 @@ async def submit_template(
             raise HTTPException(status_code=404, detail="Template não encontrado")
         if template.status not in {TemplateStatus.DRAFT, TemplateStatus.REJECTED}:
             raise HTTPException(status_code=409, detail="Template já submetido")
+        organization = await db.get(Organization, template.organization_id)
+        if organization is None:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+        meta_name = build_company_meta_name(organization.name, template.name)
+        duplicate = await db.scalar(
+            select(MessageTemplate.id).where(
+                MessageTemplate.organization_id == template.organization_id,
+                MessageTemplate.name == meta_name,
+                MessageTemplate.language == template.language,
+                MessageTemplate.id != template.id,
+            )
+        )
+        if duplicate:
+            raise HTTPException(
+                status_code=409,
+                detail="Já existe um template com esse nome empresarial e idioma",
+            )
+        template.name = meta_name
         connection = await get_waba_connection(db, template.organization_id)
         provider = build_provider_for_connection(
             settings.meta_mode, connection, settings.meta_graph_version
@@ -279,7 +332,7 @@ async def submit_template(
                 {
                     "name": template.name,
                     "language": template.language,
-                    "category": template.category.value,
+                    "category": template.requested_category.value,
                     "components": components,
                 }
             )
@@ -287,13 +340,29 @@ async def submit_template(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         template.meta_template_id = str(response["id"])
         template.status = TemplateStatus(response.get("status", "PENDING"))
-        template.category = response.get("category", template.category.value)
+        actual_category = TemplateCategory(
+            response.get("category", template.requested_category.value)
+        )
+        if actual_category != template.category:
+            template.category_changed_at = datetime.now(UTC)
+        template.category = actual_category
+        template.correct_category = (
+            TemplateCategory(response["correct_category"])
+            if response.get("correct_category")
+            else None
+        )
+        template.submission_attempt += 1
         add_audit(
             db,
             action="template.submitted",
             resource_type="template",
             resource_id=template.id,
-            details={"meta_template_id": template.meta_template_id},
+            details={
+                "meta_template_id": template.meta_template_id,
+                "requested_category": template.requested_category.value,
+                "actual_category": template.category.value,
+                "submission_attempt": template.submission_attempt,
+            },
         )
         await db.commit()
         await db.refresh(template)
@@ -307,6 +376,60 @@ async def submit_template(
         status_code=status.HTTP_200_OK,
         handler=handler,
     )
+
+
+@router.post(
+    "/{template_id}/utility-revision",
+    response_model=TemplateRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_utility_revision(
+    template_id: str,
+    db: AsyncSession = Depends(get_db),
+    organization_id: str = Depends(get_organization_id),
+    _: Principal = Depends(require_operator),
+) -> MessageTemplate:
+    source = await db.get(MessageTemplate, template_id)
+    if source is None or source.organization_id != organization_id:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+    if source.status != TemplateStatus.APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail="Nova versão utility exige template aprovado como origem",
+        )
+    organization = await db.get(Organization, organization_id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    suffix = uuid.uuid4().hex[:8]
+    revision_name = build_company_meta_name(
+        organization.name, f"{source.name}_u_{suffix}"
+    )
+    revision = MessageTemplate(
+        organization_id=organization_id,
+        name=revision_name,
+        display_name=f"{source.display_name} · nova versão utility",
+        language=source.language,
+        category=TemplateCategory.UTILITY,
+        requested_category=TemplateCategory.UTILITY,
+        status=TemplateStatus.DRAFT,
+        components=source.components,
+        variable_schema=source.variable_schema,
+        source="LOCAL",
+        revision=source.revision + 1,
+        parent_template_id=source.id,
+    )
+    db.add(revision)
+    await db.flush()
+    add_audit(
+        db,
+        action="template.utility_revision_created",
+        resource_type="template",
+        resource_id=revision.id,
+        details={"parent_template_id": source.id},
+    )
+    await db.commit()
+    await db.refresh(revision)
+    return revision
 
 
 @router.post("/sync", response_model=SyncResult)
@@ -329,3 +452,77 @@ async def synchronize_templates(
     )
     await db.commit()
     return SyncResult(created=created, updated=updated)
+
+
+@router.post("/{template_id}/test-send", response_model=TemplateTestSendResult)
+async def test_send_template(
+    template_id: str,
+    payload: TemplateTestSendRequest,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    organization_id: str = Depends(get_organization_id),
+    _: Principal = Depends(require_admin),
+) -> TemplateTestSendResult:
+    template = await db.get(MessageTemplate, template_id)
+    if template is None or template.organization_id != organization_id:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
+    if template.status != TemplateStatus.APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail="Envio de teste exige template aprovado pela Meta",
+        )
+
+    connection = await get_waba_connection(db, organization_id)
+    provider = build_provider_for_connection(
+        settings.meta_mode, connection, settings.meta_graph_version
+    )
+    phone_hash = hash_phone(payload.phone_e164)
+    reserved, _ = await reserve_template_send(db, organization_id, phone_hash)
+    if not reserved:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Limite de 3 templates sem resposta atingido; "
+                "aguarde uma mensagem do usuário"
+            ),
+        )
+    try:
+        components = build_send_components(template.variable_schema, payload.variables)
+        template_payload: dict = {
+            "name": template.name,
+            "language": {"code": template.language},
+        }
+        if components:
+            template_payload["components"] = components
+        wamid = await provider.send_template(
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": payload.phone_e164.lstrip("+"),
+                "type": "template",
+                "template": template_payload,
+            }
+        )
+        frequency_state = await confirm_template_send(db, organization_id, phone_hash)
+    except (ValueError, MetaProviderError) as exc:
+        await release_template_send(db, organization_id, phone_hash)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    add_audit(
+        db,
+        action="template.test_sent",
+        resource_type="template",
+        resource_id=template.id,
+        details={
+            "phone_suffix": payload.phone_e164[-4:],
+            "variable_aliases": sorted(payload.variables),
+            "wamid": wamid,
+            "consecutive_template_sends": frequency_state.consecutive_template_sends,
+        },
+    )
+    await db.commit()
+    return TemplateTestSendResult(
+        accepted=True,
+        wamid=wamid,
+        consecutive_template_sends=frequency_state.consecutive_template_sends,
+    )

@@ -14,11 +14,31 @@ const BODY_LIMIT = 1024;
 const FOOTER_LIMIT = 60;
 const HEADER_LIMIT = 60;
 const EDITABLE_STATUSES: MessageTemplate["status"][] = ["DRAFT", "REJECTED"];
+type VariableDefinition = MessageTemplate["variable_schema"][string];
+
+function normalizeTestPhone(value: string): string {
+  let digits = value.replace(/\D/g, "");
+  if (!value.trim().startsWith("+") && (digits.length === 10 || digits.length === 11)) digits = `55${digits}`;
+  return `+${digits}`;
+}
+
+function testInputError(
+  phone: string,
+  definitions: Array<[string, VariableDefinition]>,
+  variables: Record<string, string>,
+  optIn: boolean
+): string | null {
+  if (!/^\+[1-9]\d{7,14}$/.test(normalizeTestPhone(phone))) return "Informe um telefone válido com DDI.";
+  const missing = definitions.filter(([, definition]) => definition.required && !variables[definition.alias]?.trim());
+  if (missing.length) return `Preencha: ${missing.map(([, definition]) => definition.alias).join(", ")}.`;
+  if (!optIn) return "Confirme que o número autorizou o recebimento.";
+  return null;
+}
 
 const initialRules: AudienceRules = {
   eligible_not_closed: true,
   no_response_days: 7,
-  fewer_than_direct_messages: 3
+  fewer_than_direct_messages: null
 };
 
 const AUDIENCE_RULE_LABELS: Record<string, string> = {
@@ -44,14 +64,32 @@ function componentsToEdit(components: TemplateComponent[]): DraftEdit {
   };
 }
 
-function editToComponents(edit: DraftEdit): TemplateComponent[] {
+function editToComponents(
+  edit: DraftEdit,
+  variableSchema?: MessageTemplate["variable_schema"],
+  examples?: Record<string, string>
+): TemplateComponent[] {
   const components: TemplateComponent[] = [];
   if (edit.header.trim()) components.push({ type: "HEADER", format: "TEXT", text: edit.header.trim() });
-  components.push({ type: "BODY", text: edit.body });
+  const body: TemplateComponent = { type: "BODY", text: edit.body };
+  const definitions = Object.entries(variableSchema ?? {}).sort(([left], [right]) => Number(left) - Number(right));
+  const exampleValues = definitions.map(([, definition]) => examples?.[definition.alias]?.trim() ?? "");
+  if (exampleValues.length > 0 && exampleValues.every(Boolean)) body.example = { body_text: [exampleValues] };
+  components.push(body);
   if (edit.footer.trim()) components.push({ type: "FOOTER", text: edit.footer.trim() });
   const buttons = edit.buttons.map((text) => text.trim()).filter(Boolean);
   if (buttons.length) components.push({ type: "BUTTONS", buttons: buttons.map((text) => ({ type: "QUICK_REPLY", text })) });
   return components;
+}
+
+function extractVariableExamples(template: MessageTemplate): Record<string, string> {
+  const body = template.components.find((item) => item.type.toUpperCase() === "BODY");
+  const row = body?.example?.body_text?.[0] ?? [];
+  return Object.fromEntries(
+    Object.entries(template.variable_schema)
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .map(([, definition], index) => [definition.alias, row[index] ?? ""])
+  );
 }
 
 function deriveVariableSchema(
@@ -89,6 +127,10 @@ export function DirectMessagesPage() {
   const [variableMapping, setVariableMapping] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null);
+  const [draftExamples, setDraftExamples] = useState<Record<string, string>>({});
+  const [directTestPhone, setDirectTestPhone] = useState("");
+  const [directTestVariables, setDirectTestVariables] = useState<Record<string, string>>({});
+  const [directTestOptIn, setDirectTestOptIn] = useState(false);
 
   const templatesQuery = useQuery({
     queryKey: ["templates", organizationId],
@@ -102,11 +144,16 @@ export function DirectMessagesPage() {
   useEffect(() => {
     if (selectedTemplate && EDITABLE_STATUSES.includes(selectedTemplate.status)) {
       setDraftEdit(componentsToEdit(selectedTemplate.components));
+      setDraftExamples(extractVariableExamples(selectedTemplate));
     } else {
       setDraftEdit(null);
+      setDraftExamples({});
     }
     if (selectedTemplate) {
       setVariableMapping(Object.fromEntries(Object.values(selectedTemplate.variable_schema).map((definition) => [definition.alias, definition.source])));
+      setDirectTestVariables(Object.fromEntries(Object.values(selectedTemplate.variable_schema).map((definition) => [definition.alias, ""])));
+      setDirectTestPhone("");
+      setDirectTestOptIn(false);
     }
   }, [selectedTemplate]);
 
@@ -153,6 +200,18 @@ export function DirectMessagesPage() {
     onError: (error) => setNotice(error.message)
   });
 
+  const utilityRevisionMutation = useMutation({
+    mutationFn: (id: string) => api.createUtilityRevision(id, organizationId!),
+    onSuccess: async (template) => {
+      await client.invalidateQueries({ queryKey: ["templates"] });
+      setSelectedTemplate(template);
+      setWizardStep(2);
+      setAudience(null);
+      setNotice("Nova versão utility criada. Revise o texto antes de submeter.");
+    },
+    onError: (error) => setNotice(error.message)
+  });
+
   const previewMutation = useMutation({
     mutationFn: () => api.previewAudience(product, selectedTemplate!.category, rules, organizationId!),
     onSuccess: (result) => {
@@ -165,11 +224,12 @@ export function DirectMessagesPage() {
   const saveDraftMutation = useMutation({
     mutationFn: async () => {
       if (!selectedTemplate || !draftEdit) throw new Error("Nada para salvar");
+      const schema = deriveVariableSchema(draftEdit, selectedTemplate.variable_schema);
       return api.updateDraft(selectedTemplate.id, {
         display_name: selectedTemplate.display_name,
-        category: selectedTemplate.category,
-        components: editToComponents(draftEdit),
-        variable_schema: deriveVariableSchema(draftEdit, selectedTemplate.variable_schema)
+        category: selectedTemplate.requested_category,
+        components: editToComponents(draftEdit, schema, draftExamples),
+        variable_schema: schema
       }, organizationId!);
     },
     onSuccess: async (template) => {
@@ -183,11 +243,12 @@ export function DirectMessagesPage() {
   const submitMutation = useMutation({
     mutationFn: async () => {
       if (!selectedTemplate || !draftEdit) throw new Error("Nada para enviar");
+      const schema = deriveVariableSchema(draftEdit, selectedTemplate.variable_schema);
       const saved = await api.updateDraft(selectedTemplate.id, {
         display_name: selectedTemplate.display_name,
-        category: selectedTemplate.category,
-        components: editToComponents(draftEdit),
-        variable_schema: deriveVariableSchema(draftEdit, selectedTemplate.variable_schema)
+        category: selectedTemplate.requested_category,
+        components: editToComponents(draftEdit, schema, draftExamples),
+        variable_schema: schema
       }, organizationId!);
       return api.submitTemplate(saved.id, organizationId!);
     },
@@ -198,6 +259,16 @@ export function DirectMessagesPage() {
       setWizardStep(1);
       setAudience(null);
     },
+    onError: (error) => setNotice(error.message)
+  });
+
+  const directTestMutation = useMutation({
+    mutationFn: () => api.testSendTemplate(selectedTemplate!.id, organizationId!, {
+      phone_e164: normalizeTestPhone(directTestPhone),
+      variables: directTestVariables,
+      confirm_recipient_opt_in: directTestOptIn
+    }),
+    onSuccess: (result) => setNotice(`Solicitação aceita pela Meta (${result.consecutive_template_sends}/3 sem resposta); entrega aguardando confirmação: ${result.wamid}`),
     onError: (error) => setNotice(error.message)
   });
 
@@ -287,8 +358,18 @@ export function DirectMessagesPage() {
     const status = selectedTemplate.status;
     const bodyLen = draftEdit?.body.length ?? 0;
     const footerLen = draftEdit?.footer.length ?? 0;
-    const previewComponents = isEditable && draftEdit ? editToComponents(draftEdit) : selectedTemplate.components;
-    const canSubmit = isEditable && !!draftEdit && draftEdit.body.trim().length > 0;
+    const draftSchema = isEditable && draftEdit
+      ? deriveVariableSchema(draftEdit, selectedTemplate.variable_schema)
+      : selectedTemplate.variable_schema;
+    const previewComponents = isEditable && draftEdit
+      ? editToComponents(draftEdit, draftSchema, draftExamples)
+      : selectedTemplate.components;
+    const directTestDefinitions = Object.entries(selectedTemplate.variable_schema).sort(([left], [right]) => Number(left) - Number(right));
+    const directTestError = testInputError(directTestPhone, directTestDefinitions, directTestVariables, directTestOptIn);
+    const canSubmit = isEditable
+      && !!draftEdit
+      && draftEdit.body.trim().length > 0
+      && Object.values(draftSchema).every((definition) => !!draftExamples[definition.alias]?.trim());
 
     return (
       <section className="page wizard-page">
@@ -300,6 +381,11 @@ export function DirectMessagesPage() {
           <button className={wizardStep === 1 ? "active" : "done"} onClick={() => setWizardStep(1)}><span>1</span> Público e momento</button>
           <button className={wizardStep === 2 ? "active" : ""} onClick={() => setWizardStep(2)}><span>2</span> Mensagem</button>
         </div>
+        {status === "APPROVED" && (selectedTemplate.category === "MARKETING" || selectedTemplate.correct_category === "MARKETING") && (
+          <div className="approval-note" style={{ marginBottom: 16, color: "#ffd39b", background: "#3b2d1d" }}>
+            {selectedTemplate.category === "MARKETING" ? "Este template está classificado como MARKETING." : "Meta sinalizou futura mudança para MARKETING."} <button className="ghost" disabled={utilityRevisionMutation.isPending} onClick={() => utilityRevisionMutation.mutate(selectedTemplate.id)}>{utilityRevisionMutation.isPending ? "Criando…" : "Criar nova versão utility"}</button>
+          </div>
+        )}
 
         <div className="wizard-grid">
           <div className="wizard-card">
@@ -312,7 +398,7 @@ export function DirectMessagesPage() {
                   <label className="check"><input type="checkbox" checked disabled /> Elegível e não fechou</label>
                   <label className="check"><input type="checkbox" checked={rules.no_response_days === 7} onChange={(event) => setRules({ ...rules, no_response_days: event.target.checked ? 7 : null })} /> 1 semana sem resposta</label>
                   <label className="check"><input type="checkbox" checked={rules.no_response_days === 90} onChange={(event) => setRules({ ...rules, no_response_days: event.target.checked ? 90 : null })} /> 90 dias sem resposta</label>
-                  <label className="check"><input type="checkbox" checked={rules.fewer_than_direct_messages === 3} onChange={(event) => setRules({ ...rules, fewer_than_direct_messages: event.target.checked ? 3 : null })} /> Recebeu menos de 3 mensagens diretas</label>
+                  <label className="check"><input type="checkbox" checked disabled /> Máximo de 3 templates consecutivos sem resposta</label>
                 </fieldset>
                 <fieldset><legend>Quando enviar</legend>
                   <div className="segmented">
@@ -334,6 +420,12 @@ export function DirectMessagesPage() {
                 <label>Texto da mensagem<span className="field-counter">{bodyLen}/{BODY_LIMIT}</span>
                   <textarea rows={5} value={draftEdit.body} maxLength={BODY_LIMIT} onChange={(event) => setDraftEdit({ ...draftEdit, body: event.target.value })} />
                 </label>
+                {Object.keys(draftSchema).length > 0 && <fieldset><legend>Variáveis e exemplos para aprovação</legend>
+                  {Object.entries(draftSchema).sort(([left], [right]) => Number(left) - Number(right)).map(([position, definition]) => <label key={position}>{`{{${definition.alias}}} → {{${position}}}`}
+                    <input value={draftExamples[definition.alias] ?? ""} placeholder={`Exemplo real para ${definition.alias}`} onChange={(event) => setDraftExamples({ ...draftExamples, [definition.alias]: event.target.value })} />
+                    <span className="field-hint">Fonte no envio: {definition.source}</span>
+                  </label>)}
+                </fieldset>}
                 <label>Rodapé<span className="field-counter">{footerLen}/{FOOTER_LIMIT}</span>
                   <input value={draftEdit.footer} maxLength={FOOTER_LIMIT} onChange={(event) => setDraftEdit({ ...draftEdit, footer: event.target.value })} />
                   <span className="field-hint">Aparece pequeno no fim da mensagem.</span>
@@ -370,7 +462,28 @@ export function DirectMessagesPage() {
                     <span className="field-hint">Ex.: contact.first_name, deal.product_name ou contact.attributes.campo</span>
                   </label>)}
                 </fieldset>}
+                {status === "APPROVED" && <fieldset className="direct-test"><legend>Envio de teste para um número</legend>
+                  <p className="field-hint">Valores abaixo são enviados literalmente, sem consultar público ou CRM.</p>
+                  <label>Número com DDI
+                    <input type="tel" value={directTestPhone} placeholder="+55 (11) 99999-9999" onChange={(event) => setDirectTestPhone(event.target.value)} />
+                  </label>
+                  {directTestDefinitions.map(([position, definition]) => <label key={position}>{`Valor de {{${definition.alias}}} · posição ${position}`}
+                    <input value={directTestVariables[definition.alias] ?? ""} placeholder={`Ex.: ${definition.alias === "nome" ? "Pedro" : "12345"}`} onChange={(event) => setDirectTestVariables({ ...directTestVariables, [definition.alias]: event.target.value })} />
+                  </label>)}
+                  <label className="check"><input type="checkbox" checked={directTestOptIn} onChange={(event) => setDirectTestOptIn(event.target.checked)} /> Confirmo que este número autorizou o recebimento</label>
+                  <button type="button" className="ghost" disabled={directTestMutation.isPending} onClick={() => directTestError ? setNotice(directTestError) : directTestMutation.mutate()}>{directTestMutation.isPending ? "Enviando teste…" : "Enviar somente para este número"}</button>
+                </fieldset>}
                 <div className="approval-note">✓ Template {selectedTemplate.status} · revisão {selectedTemplate.revision} · {selectedTemplate.language}</div>
+                {selectedTemplate.requested_category !== selectedTemplate.category && (
+                  <div className="approval-note" style={{ color: "#ffd39b", background: "#3b2d1d" }}>
+                    Meta classificou como {selectedTemplate.category}; solicitado como {selectedTemplate.requested_category}.
+                  </div>
+                )}
+                {selectedTemplate.correct_category && selectedTemplate.correct_category !== selectedTemplate.category && (
+                  <div className="approval-note" style={{ color: "#ffb3b3", background: "#3d2023" }}>
+                    Meta sinalizou futura mudança para {selectedTemplate.correct_category}. Revise antes de novos disparos.
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -390,7 +503,12 @@ export function DirectMessagesPage() {
                 </button>
               </>
             ) : (
-              <button className="primary" disabled={sendMutation.isPending || (sendMode === "scheduled" && !scheduledAt)} onClick={() => sendMutation.mutate()}>{sendMutation.isPending ? "Processando…" : sendMode === "scheduled" ? "◷ Agendar mensagem" : "➤ Enviar mensagem"}</button>
+              <>
+                <button className="ghost" disabled={sendMutation.isPending || (sendMode === "scheduled" && !scheduledAt)} onClick={() => sendMutation.mutate()}>{sendMutation.isPending ? "Processando…" : sendMode === "scheduled" ? "◷ Agendar campanha pelo CRM" : "Campanha para público do CRM"}</button>
+                {status === "APPROVED" && (
+                  <button className="primary" disabled={directTestMutation.isPending} onClick={() => directTestError ? setNotice(directTestError) : directTestMutation.mutate()}>{directTestMutation.isPending ? "Enviando…" : "➤ Enviar somente para este número"}</button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -426,16 +544,37 @@ export function DirectMessagesPage() {
       {(templatesQuery.isLoading || presetsQuery.isLoading) && <div className="empty">Carregando mensagens…</div>}
       {items.length === 0 && !templatesQuery.isLoading && <div className="empty"><h3>Nenhum template por aqui.</h3><p>Sincronize com a Meta ou use um modelo pronto.</p></div>}
       <div className="cards">{items.map((item) => <TemplateCard key={item.id} item={item} onView={() => setPreviewItem(item)} onUse={() => useItem(item)} onDelete={tab === "mine" ? () => deleteItem(item as MessageTemplate) : undefined} />)}</div>
-      {previewItem && <PreviewModal item={previewItem} onClose={() => setPreviewItem(null)} onUse={() => useItem(previewItem)} />}
+      {previewItem && <PreviewModal item={previewItem} organizationId={organizationId} onClose={() => setPreviewItem(null)} onUse={() => useItem(previewItem)} />}
       {notice && <Toast message={notice} onClose={() => setNotice(null)} />}
     </section>
   );
 }
 
-function PreviewModal({ item, onClose, onUse }: { item: MessageTemplate | TemplatePreset; onClose: () => void; onUse: () => void }) {
+function PreviewModal({ item, organizationId, onClose, onUse }: { item: MessageTemplate | TemplatePreset; organizationId: string; onClose: () => void; onUse: () => void }) {
   const isTemplate = "status" in item;
   const canUse = !isTemplate || (item.status !== "PENDING" && item.status !== "PAUSED" && item.status !== "DISABLED");
   const preset = !isTemplate ? (item as TemplatePreset) : null;
+  const [testOpen, setTestOpen] = useState(false);
+  const [testPhone, setTestPhone] = useState("");
+  const [testVariables, setTestVariables] = useState<Record<string, string>>({});
+  const [testOptIn, setTestOptIn] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const variableDefinitions = isTemplate
+    ? Object.entries(item.variable_schema).sort(([left], [right]) => Number(left) - Number(right))
+    : [];
+  const testMutation = useMutation({
+    mutationFn: () => {
+      if (!isTemplate) throw new Error("Template inválido");
+      return api.testSendTemplate(item.id, organizationId, {
+        phone_e164: normalizeTestPhone(testPhone),
+        variables: testVariables,
+        confirm_recipient_opt_in: testOptIn
+      });
+    },
+    onSuccess: (result) => setTestResult(`Solicitação aceita (${result.consecutive_template_sends}/3 sem resposta); entrega aguardando confirmação: ${result.wamid}`),
+    onError: (error) => setTestResult(error.message)
+  });
+  const testError = testInputError(testPhone, variableDefinitions, testVariables, testOptIn);
   const actionLabel = !isTemplate
     ? "Usar este modelo →"
     : item.status === "APPROVED"
@@ -450,6 +589,7 @@ function PreviewModal({ item, onClose, onUse }: { item: MessageTemplate | Templa
         <div className="modal-title">
           <span className={`category ${item.category.toLowerCase()}`}>{item.category === "UTILITY" ? "UTILIDADE" : "MARKETING"}</span>
           <h2>{"display_name" in item ? item.display_name : item.name}</h2>
+          {isTemplate && <p className="muted">Nome na Meta: {item.name}</p>}
           {"description" in item && <p>{item.description}</p>}
           {preset && <p><b>Quando usar:</b> {preset.when_to_use}</p>}
         </div>
@@ -465,12 +605,30 @@ function PreviewModal({ item, onClose, onUse }: { item: MessageTemplate | Templa
               </div>
             )}
             {preset && <div className="reach-line">⚙ Alcance estimado <b>{preset.estimated_reach.toLocaleString("pt-BR")}</b></div>}
+            {isTemplate && item.status === "APPROVED" && testOpen && (
+              <div className="test-send-panel">
+                <h3>ENVIO DE TESTE</h3>
+                <p>Envia este template diretamente, sem campanha ou fonte de público.</p>
+                <label>Número com DDI
+                  <input type="tel" value={testPhone} placeholder="+55 (11) 99999-9999" onChange={(event) => setTestPhone(event.target.value)} />
+                </label>
+                {variableDefinitions.map(([position, definition]) => (
+                  <label key={position}>{`{{${definition.alias}}} · posição ${position}`}
+                    <input value={testVariables[definition.alias] ?? ""} placeholder={`Valor para ${definition.alias}`} onChange={(event) => setTestVariables({ ...testVariables, [definition.alias]: event.target.value })} />
+                  </label>
+                ))}
+                <label className="check"><input type="checkbox" checked={testOptIn} onChange={(event) => setTestOptIn(event.target.checked)} /> Confirmo que este número autorizou o recebimento</label>
+                <button className="primary" disabled={testMutation.isPending} onClick={() => testError ? setTestResult(testError) : testMutation.mutate()}>{testMutation.isPending ? "Enviando…" : "Enviar teste agora"}</button>
+                {testResult && <div className="approval-note">{testResult}</div>}
+              </div>
+            )}
           </div>
         </div>
         <footer>
           <span className="muted">{isTemplate ? `Estado: ${item.status}` : "Modelo local"}</span>
           <div>
             <button className="ghost" onClick={onClose}>Fechar</button>
+            {isTemplate && item.status === "APPROVED" && <button className="ghost" onClick={() => setTestOpen(!testOpen)}>{testOpen ? "Ocultar teste" : "Enviar teste"}</button>}
             <button className="primary" disabled={!canUse} onClick={onUse}>{actionLabel}</button>
           </div>
         </footer>

@@ -1,4 +1,3 @@
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select
@@ -13,7 +12,7 @@ from app.services.audit_service import add_audit
 from app.services.handoff_service import deliver_handoff
 from app.services.organization_service import get_waba_connection
 from app.services.template_service import sync_templates
-from app.workers.celery_app import celery_app, dispatch_campaign_task
+from app.workers.celery_app import celery_app, dispatch_campaign_task, run_async
 
 STUCK_CAMPAIGN_THRESHOLD = timedelta(minutes=10)
 
@@ -121,19 +120,19 @@ async def _sync_all_organizations() -> dict[str, int]:
 
 @celery_app.task(name="scheduler.reconcile_campaigns")
 def reconcile_campaigns_task() -> int:
-    return asyncio.run(_reconcile_stuck_campaigns())
+    return run_async(_reconcile_stuck_campaigns())
 
 
 @celery_app.task(name="scheduler.sync_all_organizations")
 def sync_all_organizations_task() -> dict[str, int]:
-    return asyncio.run(_sync_all_organizations())
+    return run_async(_sync_all_organizations())
 
 
 @celery_app.task(name="scheduler.dispatch_due_campaigns")
 def dispatch_due_campaigns_task() -> int:
-    return asyncio.run(_dispatch_due_campaigns())
+    return run_async(_dispatch_due_campaigns())
 
 
 @celery_app.task(name="scheduler.retry_handoffs")
 def retry_handoffs_task() -> int:
-    return asyncio.run(_retry_handoffs())
+    return run_async(_retry_handoffs())

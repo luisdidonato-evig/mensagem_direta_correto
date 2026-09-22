@@ -164,6 +164,12 @@ h3 { font-size: 14px; margin: 9px 0; }
 .suggested-audience .pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #3a4550; border-radius: 999px; padding: 7px 12px; font-size: 10px; color: #d9e9aa; background: #202a19; }
 .reach-line { grid-column: 1 / -1; color: #8fa1ae; font-size: 10px; display: flex; align-items: center; gap: 6px; }
 .reach-line b { color: #dce4ea; font-size: 13px; }
+.test-send-panel { grid-column: 1 / -1; display: grid; gap: 10px; }
+.test-send-panel p { margin: 0; }
+.test-send-panel label { color: #d3d9de; font-size: 9px; font-weight: 700; }
+.test-send-panel input:not([type=checkbox]) { display: block; width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #303945; border-radius: 9px; color: #f0f3f5; background: #20262e; }
+.test-send-panel .check { width: max-content; font-weight: 400; }
+.test-send-panel .primary { width: max-content; }
 .modal > footer { border-top: 1px solid #303844; padding: 12px 22px; display: flex; justify-content: space-between; align-items: center; }
 .modal > footer > div { display: flex; gap: 8px; }
 .connection-modal { width: min(520px, 95vw); }

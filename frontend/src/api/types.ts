@@ -16,11 +16,16 @@ export interface MessageTemplate {
   display_name: string;
   language: string;
   category: TemplateCategory;
+  requested_category: TemplateCategory;
+  correct_category: TemplateCategory | null;
   status: TemplateStatus;
   components: TemplateComponent[];
   variable_schema: Record<string, { alias: string; source: string; required: boolean }>;
   source: string;
   revision: number;
+  parent_template_id: string | null;
+  submission_attempt: number;
+  category_changed_at: string | null;
   rejection_reason: string | null;
   created_at: string;
   updated_at: string;
@@ -107,4 +112,10 @@ export interface WabaConnectionWrite {
 export interface WabaConnectionTestResult {
   status: WabaConnectionStatus;
   detail: string;
+}
+
+export interface TemplateTestSendResult {
+  accepted: boolean;
+  wamid: string;
+  consecutive_template_sends: number;
 }

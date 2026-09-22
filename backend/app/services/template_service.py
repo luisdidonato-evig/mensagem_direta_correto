@@ -1,4 +1,6 @@
 import re
+import unicodedata
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +10,21 @@ from app.models.template import MessageTemplate, TemplateCategory, TemplateStatu
 
 ALIAS_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 ALIAS_POSITION_PATTERN = re.compile(r"{{\s*(\d+)\s*}}")
+META_NAME_INVALID_PATTERN = re.compile(r"[^a-z0-9]+")
+
+
+def normalize_meta_name(value: str) -> str:
+    ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    return META_NAME_INVALID_PATTERN.sub("_", ascii_value.casefold()).strip("_")
+
+
+def build_company_meta_name(company_name: str, template_name: str) -> str:
+    company_slug = normalize_meta_name(company_name) or "empresa"
+    template_slug = normalize_meta_name(template_name) or "template"
+    if template_slug == company_slug or template_slug.startswith(f"{company_slug}_"):
+        return template_slug[:512].rstrip("_")
+    available = 512 - len(company_slug) - 1
+    return f"{company_slug}_{template_slug[:available]}".rstrip("_")
 
 
 def infer_variable_schema(components: list[dict]) -> dict:
@@ -142,6 +159,12 @@ async def sync_templates(
                 display_name=remote["name"].replace("_", " ").title(),
                 language=remote.get("language", "pt_BR"),
                 category=TemplateCategory(remote.get("category", "MARKETING")),
+                requested_category=TemplateCategory(remote.get("category", "MARKETING")),
+                correct_category=(
+                    TemplateCategory(remote["correct_category"])
+                    if remote.get("correct_category")
+                    else None
+                ),
                 status=TemplateStatus(remote.get("status", "PENDING")),
                 components=components,
                 variable_schema=infer_variable_schema(components),
@@ -150,7 +173,17 @@ async def sync_templates(
             db.add(template)
             created += 1
         else:
-            template.category = TemplateCategory(remote.get("category", template.category.value))
+            remote_category = TemplateCategory(
+                remote.get("category", template.category.value)
+            )
+            if remote_category != template.category:
+                template.category_changed_at = datetime.now(UTC)
+            template.category = remote_category
+            template.correct_category = (
+                TemplateCategory(remote["correct_category"])
+                if remote.get("correct_category")
+                else None
+            )
             template.status = TemplateStatus(remote.get("status", template.status.value))
             template.components = remote.get("components", template.components)
             template.variable_schema = infer_variable_schema(template.components)

@@ -1,8 +1,11 @@
 import asyncio
+from collections.abc import Coroutine
+from typing import Any
 
 from celery import Celery
 
 from app.core.config import get_settings
+from app.core.database import engine
 from app.models.campaign import CampaignStatus
 from app.services.campaign_dispatcher import dispatch_campaign
 
@@ -43,6 +46,18 @@ class DispatchStillPending(Exception):
     Meta error and are still waiting their turn (see campaign_dispatcher)."""
 
 
+def run_async(coroutine: Coroutine[Any, Any, Any]) -> Any:
+    """Run one Celery async job without reusing asyncpg connections across event loops."""
+
+    async def runner() -> Any:
+        try:
+            return await coroutine
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(runner())
+
+
 @celery_app.task(
     bind=True,
     name="campaign.dispatch",
@@ -53,7 +68,7 @@ class DispatchStillPending(Exception):
     max_retries=8,
 )
 def dispatch_campaign_task(self, campaign_id: str) -> str:
-    result = asyncio.run(dispatch_campaign(campaign_id))
+    result = run_async(dispatch_campaign(campaign_id))
     if result == CampaignStatus.SENDING:
         raise DispatchStillPending(campaign_id)
     return result.value

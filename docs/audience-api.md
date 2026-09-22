@@ -26,6 +26,9 @@ Campos adicionais usados em templates devem vir em `attributes`. Por exemplo,
 `"attributes": {"numero_contrato": "123"}` pode ser referenciado por
 `contact.attributes.numero_contrato` no mapeamento da campanha.
 
-`phone_e164`, consentimento, estado do negócio e contagem de mensagens são
-revalidados imediatamente antes do disparo. Opt-outs registrados localmente sempre
-prevalecem sobre a resposta da fonte.
+`phone_e164`, consentimento e estado do negócio são revalidados imediatamente antes
+do disparo. `direct_messages_90d` permanece disponível como dado comercial, mas não
+é autoridade para frequência. O serviço mantém contador próprio e bloqueia o quarto
+template consecutivo por empresa e telefone; qualquer mensagem recebida do usuário
+zera esse contador. Opt-outs registrados localmente sempre prevalecem sobre a resposta
+da fonte.

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     meta_phone_number_id: str = ""
     meta_webhook_verify_token: str = "change-me"
     meta_app_secret: str = ""
+    meta_webhook_forward_url: str = ""
     store_webhook_payloads: bool = False
 
     @property

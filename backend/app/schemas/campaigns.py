@@ -9,7 +9,9 @@ from app.models.campaign import CampaignStatus
 class AudienceRules(BaseModel):
     eligible_not_closed: bool = True
     no_response_days: int | None = Field(default=None)
-    fewer_than_direct_messages: int | None = Field(default=3, ge=1, le=100)
+    # Legado da fonte comercial. O limite obrigatório de três envios consecutivos
+    # é aplicado pelo estado local, independentemente desta regra opcional.
+    fewer_than_direct_messages: int | None = Field(default=None, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_rules(self) -> "AudienceRules":

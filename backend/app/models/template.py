@@ -40,11 +40,24 @@ class MessageTemplate(Base):
     display_name: Mapped[str] = mapped_column(String(512))
     language: Mapped[str] = mapped_column(String(16), default="pt_BR")
     category: Mapped[TemplateCategory] = mapped_column(Enum(TemplateCategory))
+    requested_category: Mapped[TemplateCategory] = mapped_column(
+        Enum(TemplateCategory), default=TemplateCategory.UTILITY
+    )
+    correct_category: Mapped[TemplateCategory | None] = mapped_column(
+        Enum(TemplateCategory), nullable=True
+    )
     status: Mapped[TemplateStatus] = mapped_column(Enum(TemplateStatus))
     components: Mapped[list[dict]] = mapped_column(JSON, default=list)
     variable_schema: Mapped[dict] = mapped_column(JSON, default=dict)
     source: Mapped[str] = mapped_column(String(32), default="LOCAL")
     revision: Mapped[int] = mapped_column(Integer, default=1)
+    parent_template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("message_templates.id"), nullable=True, index=True
+    )
+    submission_attempt: Mapped[int] = mapped_column(Integer, default=0)
+    category_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

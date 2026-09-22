@@ -75,7 +75,8 @@ As regras marcadas são cumulativas (`AND`). A regra de 90 dias já contém a co
 - não constar na lista de opt-out/bloqueio;
 - não ter negócio fechado após a montagem do público;
 - possuir todos os valores exigidos pelas variáveis do template;
-- respeitar o limite de frequência configurado;
+- no máximo três templates consecutivos por empresa e telefone; qualquer mensagem
+  recebida do usuário zera o contador local;
 - não ter recebido a mesma campanha;
 - não estar em supressão operacional ou jurídica.
 

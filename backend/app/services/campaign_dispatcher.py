@@ -21,6 +21,11 @@ from app.services.audience_service import (
     evaluate_candidate,
 )
 from app.services.audit_service import add_audit
+from app.services.frequency_service import (
+    confirm_template_send,
+    release_template_send,
+    reserve_template_send,
+)
 from app.services.organization_service import get_waba_connection
 from app.services.template_service import build_send_components
 
@@ -185,11 +190,21 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
             )
             if opted_out:
                 reasons.append("opt_out_persistido")
+            phone_hash = hash_phone(contact.phone_e164)
+            frequency_reserved = False
+            frequency_position = 0
+            if not reasons:
+                frequency_reserved, frequency_position = await reserve_template_send(
+                    db, campaign.organization_id, phone_hash
+                )
+                if not frequency_reserved:
+                    reasons.append("limite_consecutivo_sem_resposta")
             if reasons:
                 recipient.status = RecipientStatus.SUPPRESSED
                 recipient.eligibility_snapshot = {
                     **campaign.audience_rules,
                     "suppression_reasons": sorted(set(reasons)),
+                    "consecutive_template_sends": frequency_position,
                 }
                 campaign.updated_at = datetime.now(UTC)
                 campaign.dispatch_lease_until = campaign.updated_at + DISPATCH_LEASE
@@ -201,6 +216,8 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                 # novo agora, só deixa o destinatário pendente pra próxima
                 # tentativa (com backoff/jitter no nível do worker Celery).
                 pending_retry = True
+                if frequency_reserved:
+                    await release_template_send(db, campaign.organization_id, phone_hash)
                 campaign.updated_at = datetime.now(UTC)
                 campaign.dispatch_lease_until = campaign.updated_at + DISPATCH_LEASE
                 await db.commit()
@@ -224,10 +241,29 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                     }
                 )
                 recipient.status = RecipientStatus.ACCEPTED
+                state = await confirm_template_send(
+                    db, campaign.organization_id, phone_hash
+                )
+                recipient.eligibility_snapshot = {
+                    **campaign.audience_rules,
+                    "consecutive_template_sends": state.consecutive_template_sends,
+                }
+                add_audit(
+                    db,
+                    action="template.send_accepted",
+                    resource_type="contact",
+                    resource_id=recipient.external_contact_id,
+                    details={
+                        "campaign_id": campaign.id,
+                        "consecutive_template_sends": state.consecutive_template_sends,
+                    },
+                )
                 recipient.failure_code = None
                 recipient.failure_detail = None
                 meta_circuit_breaker.record_success(breaker_key)
             except (MetaProviderError, ValueError) as exc:
+                if frequency_reserved:
+                    await release_template_send(db, campaign.organization_id, phone_hash)
                 transient = isinstance(exc, MetaProviderError) and exc.transient
                 recipient.failure_code = getattr(exc, "code", "invalid_variables")
                 recipient.failure_detail = str(exc)

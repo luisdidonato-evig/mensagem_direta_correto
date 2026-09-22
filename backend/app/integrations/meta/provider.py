@@ -110,7 +110,11 @@ class MetaGraphProvider(WhatsAppProvider):
         detail = response.text
         try:
             error = response.json().get("error", {})
-            detail = error.get("message", detail)
+            detail = (
+                error.get("error_user_msg")
+                or error.get("error_data", {}).get("details")
+                or error.get("message", detail)
+            )
             code = str(error.get("code", response.status_code))
         except ValueError:
             code = str(response.status_code)
@@ -124,7 +128,9 @@ class MetaGraphProvider(WhatsAppProvider):
         url = f"{self.base_url}/{self.waba_id}/message_templates"
         templates: list[dict[str, Any]] = []
         params: dict[str, str] | None = {
-            "fields": "id,name,language,category,status,components,rejected_reason",
+            "fields": (
+                "id,name,language,category,correct_category,status,components,rejected_reason"
+            ),
             "limit": "100",
         }
         while url:

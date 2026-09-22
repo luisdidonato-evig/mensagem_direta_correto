@@ -121,6 +121,10 @@ Implementado:
 - outbox persistente para respostas, com retry exponencial e recuperação pelo Celery Beat;
 - recuperação de campanhas agendadas vencidas mesmo depois de perda/reinício do Redis;
 - inferência e edição das fontes de variáveis em templates sincronizados da Meta;
+- versões imutáveis: template aprovado como marketing pode gerar novo rascunho utility sem alterar campanhas antigas;
+- categoria solicitada, categoria efetiva e futura correção da Meta registradas separadamente;
+- nomes enviados à Meta recebem prefixo normalizado da empresa para facilitar gestão na WABA;
+- limite local obrigatório de três templates consecutivos por contato, zerado somente por mensagem recebida;
 - restrições de templates corretamente isoladas por organização;
 - logs JSON com request ID, status e duração;
 - workflow de CI para lint, testes, migrações e build;

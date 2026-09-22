@@ -24,6 +24,7 @@ async def create_schema() -> None:
     from app.models import (  # noqa: F401
         Campaign,
         CampaignRecipient,
+        ContactMessagingState,
         HandoffDelivery,
         IdempotencyRecord,
         MessageTemplate,

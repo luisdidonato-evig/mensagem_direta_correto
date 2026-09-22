@@ -26,6 +26,17 @@ from app.workers.celery_app import dispatch_campaign_task
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 
+def ensure_real_audience_in_production(settings: Settings) -> None:
+    if settings.app_env == "production" and settings.audience_mode == "mock":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Campanha bloqueada: o público ainda está em modo demonstrativo. "
+                "Use 'Enviar somente para este número' para testar."
+            ),
+        )
+
+
 @router.get("", response_model=list[CampaignRead])
 async def list_campaigns(
     db: AsyncSession = Depends(get_db),
@@ -43,10 +54,13 @@ async def list_campaigns(
 async def create_campaign(
     payload: CampaignCreate,
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
     organization_id: str = Depends(get_organization_id),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _: Principal = Depends(require_operator),
 ) -> CampaignRead | dict:
+    ensure_real_audience_in_production(settings)
+
     async def handler() -> CampaignRead:
         template = await db.get(MessageTemplate, payload.template_id)
         if template is None or template.organization_id != organization_id:
@@ -196,6 +210,8 @@ async def send_campaign(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _: Principal = Depends(require_operator),
 ) -> CampaignRead | dict:
+    ensure_real_audience_in_production(settings)
+
     async def handler() -> CampaignRead:
         campaign = await db.scalar(
             select(Campaign).where(
@@ -244,6 +260,8 @@ async def schedule_campaign(
     source: AudienceSource = Depends(get_audience_source),
     _: Principal = Depends(require_operator),
 ) -> Campaign:
+    ensure_real_audience_in_production(settings)
+
     if settings.dispatch_mode != "celery":
         raise HTTPException(status_code=409, detail="Agendamento requer DISPATCH_MODE=celery")
     campaign = await db.scalar(
