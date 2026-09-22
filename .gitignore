@@ -1,0 +1,17 @@
+.env
+.env.production
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.db
+*.egg-info/
+node_modules/
+dist/
+*.tsbuildinfo
+deploy/*.tgz
+vite.config.js
+vite.config.d.ts
+coverage/
+.coverage

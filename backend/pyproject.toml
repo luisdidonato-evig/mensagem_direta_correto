@@ -1,0 +1,42 @@
+[project]
+name = "evig-direct-messages-api"
+version = "0.1.0"
+description = "API de templates e campanhas de mensagem direta da Evig"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.14,<2",
+  "aiosqlite>=0.20,<1",
+  "asyncpg>=0.30,<1",
+  "celery[redis]>=5.4,<6",
+  "cryptography>=44.0,<45",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "pydantic-settings>=2.7,<3",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy>=2.0.36,<3",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "respx>=0.22,<1",
+  "ruff>=0.9,<1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["migrations*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"] # FastAPI usa Depends/Query intencionalmente nos defaults.

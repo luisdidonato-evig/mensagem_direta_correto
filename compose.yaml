@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: evig_messages
+      POSTGRES_USER: evig
+      POSTGRES_PASSWORD: evig-local
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evig -d evig_messages"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://evig:evig-local@postgres:5432/evig_messages
+      AUTO_CREATE_SCHEMA: "false"
+      CORS_ORIGINS: http://localhost:5173
+      REDIS_URL: redis://redis:6379/0
+      DISPATCH_MODE: celery
+      PII_HASH_SECRET: local-only-change-in-production
+      META_MODE: mock
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+asyncpg://evig:evig-local@postgres:5432/evig_messages
+      AUTO_CREATE_SCHEMA: "false"
+      REDIS_URL: redis://redis:6379/0
+      DISPATCH_MODE: celery
+      PII_HASH_SECRET: local-only-change-in-production
+      META_MODE: mock
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: ./backend
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+asyncpg://evig:evig-local@postgres:5432/evig_messages
+      AUTO_CREATE_SCHEMA: "false"
+      REDIS_URL: redis://redis:6379/0
+      DISPATCH_MODE: celery
+      PII_HASH_SECRET: local-only-change-in-production
+      META_MODE: mock
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres-data:

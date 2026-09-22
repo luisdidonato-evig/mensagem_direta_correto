@@ -1,0 +1,1 @@
+17 3 * * * root /opt/evig/deploy/backup-postgres.sh >> /var/log/evig-postgres-backup.log 2>&1
