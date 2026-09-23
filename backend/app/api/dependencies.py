@@ -5,7 +5,8 @@ from app.core.auth import Principal, get_principal
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.integrations.audience.provider import AudienceSource, build_audience_source
-from app.integrations.meta.provider import WhatsAppProvider, build_provider_for_connection
+from app.integrations.campaign_provider import CampaignProvider, build_campaign_provider
+from app.integrations.meta.provider import WhatsAppProvider
 from app.services.organization_service import get_waba_connection, resolve_organization_id
 
 

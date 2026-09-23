@@ -9,8 +9,10 @@ from app.core.crypto import encrypt_token
 from app.core.database import SessionLocal
 from app.core.privacy import hash_phone
 from app.integrations.audience.provider import AudienceSourceError, build_audience_source
+from app.integrations.campaign_provider import build_campaign_provider
+from app.integrations.gateway.provider import GatewayProviderError
 from app.integrations.meta.circuit_breaker import meta_circuit_breaker
-from app.integrations.meta.provider import MetaProviderError, build_provider_for_connection
+from app.integrations.meta.provider import MetaProviderError
 from app.models.campaign import Campaign, CampaignRecipient, CampaignStatus, RecipientStatus
 from app.models.compliance import OptOut
 from app.models.template import MessageTemplate, TemplateStatus
@@ -111,10 +113,8 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
 
         connection = await get_waba_connection(db, campaign.organization_id)
         try:
-            provider = build_provider_for_connection(
-                settings.meta_mode, connection, settings.meta_graph_version
-            )
-        except MetaProviderError as exc:
+            provider = build_campaign_provider(settings, connection)
+        except (MetaProviderError, GatewayProviderError) as exc:
             campaign.status = CampaignStatus.FAILED
             campaign.dispatch_lease_owner = None
             campaign.dispatch_lease_until = None
@@ -211,7 +211,7 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                 await db.commit()
                 continue
 
-            if meta_circuit_breaker.is_open(breaker_key):
+            if not settings.gateway_dispatch_enabled and meta_circuit_breaker.is_open(breaker_key):
                 # Meta está instável para esta organização: não bate na API de
                 # novo agora, só deixa o destinatário pendente pra próxima
                 # tentativa (com backoff/jitter no nível do worker Celery).
@@ -223,22 +223,14 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                 await db.commit()
                 continue
 
-            template_payload: dict = {
-                "name": template.name,
-                "language": {"code": template.language},
-            }
             try:
                 components = build_send_components(template.variable_schema, variables)
-                if components:
-                    template_payload["components"] = components
                 recipient.wamid = await provider.send_template(
-                    {
-                        "messaging_product": "whatsapp",
-                        "recipient_type": "individual",
-                        "to": contact.phone_e164.lstrip("+"),
-                        "type": "template",
-                        "template": template_payload,
-                    }
+                    recipient=contact.phone_e164,
+                    template_name=template.name,
+                    language=template.language,
+                    components=components,
+                    idempotency_key=f"campaign:{campaign.id}:recipient:{recipient.id}",
                 )
                 recipient.status = RecipientStatus.ACCEPTED
                 state = await confirm_template_send(
@@ -260,15 +252,17 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                 )
                 recipient.failure_code = None
                 recipient.failure_detail = None
-                meta_circuit_breaker.record_success(breaker_key)
-            except (MetaProviderError, ValueError) as exc:
+                if not settings.gateway_dispatch_enabled:
+                    meta_circuit_breaker.record_success(breaker_key)
+            except (MetaProviderError, GatewayProviderError, ValueError) as exc:
                 if frequency_reserved:
                     await release_template_send(db, campaign.organization_id, phone_hash)
-                transient = isinstance(exc, MetaProviderError) and exc.transient
+                transient = isinstance(exc, (MetaProviderError, GatewayProviderError)) and exc.transient
                 recipient.failure_code = getattr(exc, "code", "invalid_variables")
                 recipient.failure_detail = str(exc)
                 if transient:
-                    meta_circuit_breaker.record_failure(breaker_key)
+                    if not settings.gateway_dispatch_enabled:
+                        meta_circuit_breaker.record_failure(breaker_key)
                     recipient.retry_count += 1
                     if recipient.retry_count >= MAX_SEND_RETRIES:
                         recipient.status = RecipientStatus.FAILED
