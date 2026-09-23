@@ -10,6 +10,7 @@ from app.core.auth import Principal, require_admin, require_operator
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.privacy import hash_phone
+from app.integrations.campaign_provider import build_campaign_provider
 from app.integrations.gateway.provider import GatewayProviderError
 from app.integrations.meta.provider import (
     MetaProviderError,
@@ -339,6 +340,7 @@ async def submit_template(
             )
         except (ValueError, MetaProviderError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
         template.meta_template_id = str(response["id"])
         template.status = TemplateStatus(response.get("status", "PENDING"))
         actual_category = TemplateCategory(
@@ -474,9 +476,7 @@ async def test_send_template(
         )
 
     connection = await get_waba_connection(db, organization_id)
-    provider = build_provider_for_connection(
-        settings.meta_mode, connection, settings.meta_graph_version
-    )
+    provider = build_campaign_provider(settings, connection)
     phone_hash = hash_phone(payload.phone_e164)
     reserved, _ = await reserve_template_send(db, organization_id, phone_hash)
     if not reserved:
@@ -496,16 +496,14 @@ async def test_send_template(
         if components:
             template_payload["components"] = components
         wamid = await provider.send_template(
-            {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": payload.phone_e164.lstrip("+"),
-                "type": "template",
-                "template": template_payload,
-            }
+            recipient=payload.phone_e164,
+            template_name=template.name,
+            language=template.language,
+            components=components,
+            idempotency_key=f"template-test:{template.id}:{phone_hash}",
         )
         frequency_state = await confirm_template_send(db, organization_id, phone_hash)
-    except (ValueError, MetaProviderError) as exc:
+    except (ValueError, MetaProviderError, GatewayProviderError) as exc:
         await release_template_send(db, organization_id, phone_hash)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

@@ -4,7 +4,7 @@ Primeiro vertical slice do serviço de templates e campanhas via WhatsApp Busine
 
 ## Estrutura
 
-- `backend/`: FastAPI, domínio, persistência e adapter da Meta;
+- `backend/`: FastAPI, domínio, persistência e adapters Meta/gateway;
 - `frontend/`: React + TypeScript + Vite;
 - `docs/adr/`: decisões de arquitetura registradas;
 - `contracts/`: snapshot do contrato REST (OpenAPI);
@@ -60,6 +60,12 @@ limite de memória. O banco fica persistido no volume `postgres-data`; mantenha
 backup externo periódico desse volume. O deploy Lightsail também instala o
 script `deploy/backup-postgres.sh`, que gera dumps locais diários com retenção
 de sete dias quando o arquivo cron correspondente é habilitado.
+
+## Disparo via gateway
+
+Quando `GATEWAY_URL` e `GATEWAY_INTERNAL_KEY` estão preenchidos, campanhas e envios de teste usam o fluxo `Mensagem Direta → gateway Go → Meta`. O `GATEWAY_CHANNEL_ACCOUNT_ID` pode ficar vazio em desenvolvimento; em produção é obrigatório. O adapter envia `POST /internal/v1/messages` autenticado por `X-Internal-Key`, preserva o nome local em `template_key` e grava `delivery_id` como identificador local com status `ACCEPTED`.
+
+Configure o callback da Meta no gateway Go. Enquanto a ingestão de status do gateway não foi implementada, o endpoint local de webhook mantém somente a verificação `GET` e não processa nem encaminha eventos de mensagem/status da Meta.
 
 ## Modo Meta
 
