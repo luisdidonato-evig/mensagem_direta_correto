@@ -39,6 +39,7 @@ class WabaConnection(Base):
     business_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     waba_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     phone_number_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    channel_account_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     api_version: Mapped[str] = mapped_column(String(16), default="v23.0")
     # Armazena envelope Fernet; a chave vem de PII_HASH_SECRET no MVP.
     access_token: Mapped[str | None] = mapped_column(String(512), nullable=True)

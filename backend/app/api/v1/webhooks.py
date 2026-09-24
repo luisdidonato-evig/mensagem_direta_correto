@@ -1,3 +1,5 @@
+"""Legacy Meta webhook handlers. Not registered; middleware owns Meta callbacks."""
+
 import hashlib
 import hmac
 import json
@@ -60,6 +62,14 @@ def verify_signature(raw_body: bytes, signature: str | None, app_secret: str) ->
     return hmac.compare_digest(signature, expected)
 
 
+def has_message_events(payload: dict[str, Any]) -> bool:
+    return any(
+        change.get("field") == "messages"
+        for entry in payload.get("entry", [])
+        for change in entry.get("changes", [])
+    )
+
+
 async def forward_webhook(raw_body: bytes, signature: str | None, settings: Settings) -> None:
     if not settings.meta_webhook_forward_url:
         return
@@ -99,6 +109,11 @@ async def receive_webhook(
         payload: dict[str, Any] = json.loads(raw_body)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="JSON inválido") from exc
+
+    if settings.gateway_dispatch_enabled and has_message_events(payload):
+        # Gateway is the sole Meta callback owner for message/status events while
+        # status callback ingestion is not implemented here yet.
+        return {"received": True, "status": "gateway_callback_owner"}
 
     # A Meta permite um callback por app. Este projeto processa campanhas e
     # repassa o mesmo evento assinado para o centro de atendimento.

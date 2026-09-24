@@ -17,7 +17,7 @@ class MetaProviderError(RuntimeError):
         self.transient = transient
 
 
-class WhatsAppProvider(ABC):
+class TemplateManagementProvider(ABC):
     @abstractmethod
     async def list_templates(self) -> list[dict[str, Any]]: ...
 
@@ -27,11 +27,7 @@ class WhatsAppProvider(ABC):
     @abstractmethod
     async def delete_template(self, name: str) -> None: ...
 
-    @abstractmethod
-    async def send_template(self, payload: dict[str, Any]) -> str: ...
-
-
-class MockWhatsAppProvider(WhatsAppProvider):
+class MockTemplateManagementProvider(TemplateManagementProvider):
     async def list_templates(self) -> list[dict[str, Any]]:
         return [
             {
@@ -67,17 +63,13 @@ class MockWhatsAppProvider(WhatsAppProvider):
     async def delete_template(self, name: str) -> None:
         return None
 
-    async def send_template(self, payload: dict[str, Any]) -> str:
-        return f"wamid.mock.{uuid.uuid4()}"
-
-
-class MetaGraphProvider(WhatsAppProvider):
+class MetaTemplateManagementProvider(TemplateManagementProvider):
     def __init__(
         self,
         *,
         access_token: str,
         waba_id: str,
-        phone_number_id: str,
+        phone_number_id: str = "",
         graph_version: str = "v23.0",
     ):
         missing = [
@@ -85,7 +77,6 @@ class MetaGraphProvider(WhatsAppProvider):
             for name, value in {
                 "access_token": access_token,
                 "waba_id": waba_id,
-                "phone_number_id": phone_number_id,
             }.items()
             if not value
         ]
@@ -95,7 +86,6 @@ class MetaGraphProvider(WhatsAppProvider):
             )
         self.access_token = access_token
         self.waba_id = waba_id
-        self.phone_number_id = phone_number_id
         self.base_url = f"https://graph.facebook.com/{graph_version}"
 
     @property
@@ -148,23 +138,14 @@ class MetaGraphProvider(WhatsAppProvider):
         url = f"{self.base_url}/{self.waba_id}/message_templates"
         await self._request("DELETE", url, params={"name": name})
 
-    async def send_template(self, payload: dict[str, Any]) -> str:
-        url = f"{self.base_url}/{self.phone_number_id}/messages"
-        body = await self._request("POST", url, json=payload)
-        try:
-            return str(body["messages"][0]["id"])
-        except (KeyError, IndexError) as exc:
-            raise MetaProviderError("Resposta da Meta sem wamid", code="invalid_response") from exc
-
-
 def build_provider_for_connection(
     meta_mode: str,
     connection: "WabaConnection | None",
     graph_version_fallback: str = "v23.0",
-) -> WhatsAppProvider:
+) -> TemplateManagementProvider:
     """Provider scoped to one organization's WABA connection."""
     if meta_mode != "live":
-        return MockWhatsAppProvider()
+        return MockTemplateManagementProvider()
     if connection is None:
         raise MetaProviderError(
             "Organização sem conexão WABA configurada", code="missing_connection"
@@ -175,9 +156,14 @@ def build_provider_for_connection(
             "Token da conexão WABA corrompido ou ilegível — reconfigure a conexão",
             code="undecryptable_token",
         )
-    return MetaGraphProvider(
+    return MetaTemplateManagementProvider(
         access_token=access_token or "",
         waba_id=connection.waba_id or "",
-        phone_number_id=connection.phone_number_id or "",
         graph_version=connection.api_version or graph_version_fallback,
     )
+
+
+# Compatibility names for callers that use the old management class names.
+WhatsAppProvider = TemplateManagementProvider
+MockWhatsAppProvider = MockTemplateManagementProvider
+MetaGraphProvider = MetaTemplateManagementProvider

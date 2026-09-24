@@ -14,6 +14,7 @@ const emptyForm: WabaConnectionWrite = {
   business_id: "",
   waba_id: "",
   phone_number_id: "",
+  channel_account_id: "",
   api_version: "v23.0",
   access_token: ""
 };
@@ -41,6 +42,7 @@ export function WabaConnectionModal({ organizationId, organizationName, onClose 
       business_id: connection.business_id ?? "",
       waba_id: connection.waba_id ?? "",
       phone_number_id: connection.phone_number_id ?? "",
+      channel_account_id: connection.channel_account_id ?? "",
       api_version: connection.api_version,
       access_token: ""
     });
@@ -54,6 +56,7 @@ export function WabaConnectionModal({ organizationId, organizationName, onClose 
         business_id: connection.business_id ?? "",
         waba_id: connection.waba_id ?? "",
         phone_number_id: connection.phone_number_id ?? "",
+        channel_account_id: connection.channel_account_id ?? "",
         api_version: connection.api_version,
         access_token: ""
       });
@@ -100,6 +103,9 @@ export function WabaConnectionModal({ organizationId, organizationName, onClose 
           </label>
           <label>Phone Number ID
             <input value={form.phone_number_id ?? ""} onChange={(event) => setForm({ ...form, phone_number_id: event.target.value })} placeholder="Ex.: 111222333444555" />
+          </label>
+          <label>Channel Account ID (middleware)
+            <input value={form.channel_account_id ?? ""} onChange={(event) => setForm({ ...form, channel_account_id: event.target.value })} placeholder="UUID da conta de canal" />
           </label>
           <label>Versão da Graph API
             <input value={form.api_version} onChange={(event) => setForm({ ...form, api_version: event.target.value })} placeholder="v23.0" />

@@ -2,6 +2,11 @@ import hashlib
 import hmac
 
 from app.api.v1.webhooks import verify_signature
+from app.main import app
+
+
+def test_meta_webhook_is_not_registered() -> None:
+    assert not any("/webhooks/meta" in path for path in app.openapi()["paths"])
 
 
 def test_accepts_valid_meta_signature() -> None:

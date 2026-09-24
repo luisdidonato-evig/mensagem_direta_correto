@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     meta_webhook_forward_url: str = ""
     store_webhook_payloads: bool = False
 
+    gateway_url: str = ""
+    gateway_internal_key: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
@@ -64,20 +67,31 @@ class Settings(BaseSettings):
         return value
 
     def validate_live_meta(self) -> None:
-        if self.meta_mode != "live":
+        # Template administration needs per-tenant WABA credentials, checked by its provider.
+        # This service no longer receives Meta webhooks and needs no app secret.
+        return
+
+    @property
+    def gateway_dispatch_enabled(self) -> bool:
+        return bool(self.gateway_url.strip() or self.gateway_internal_key.strip())
+
+    def validate_gateway(self) -> None:
+        if not self.gateway_dispatch_enabled:
             return
         missing = [
             name
             for name, value in {
-                "META_APP_SECRET": self.meta_app_secret,
+                "GATEWAY_URL": self.gateway_url,
+                "GATEWAY_INTERNAL_KEY": self.gateway_internal_key,
             }.items()
-            if not value
+            if not value.strip()
         ]
         if missing:
-            raise RuntimeError(f"Configuração Meta incompleta: {', '.join(missing)}")
+            raise RuntimeError(f"Configuração Gateway incompleta: {', '.join(missing)}")
 
     def validate_runtime(self) -> None:
         self.validate_live_meta()
+        self.validate_gateway()
         if self.audience_mode == "http" and not self.audience_api_url:
             raise RuntimeError("AUDIENCE_API_URL é obrigatória no modo http")
         if self.auth_enabled and not self.auth_tokens.strip():

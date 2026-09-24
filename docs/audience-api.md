@@ -29,6 +29,8 @@ Campos adicionais usados em templates devem vir em `attributes`. Por exemplo,
 `phone_e164`, consentimento e estado do negócio são revalidados imediatamente antes
 do disparo. `direct_messages_90d` permanece disponível como dado comercial, mas não
 é autoridade para frequência. O serviço mantém contador próprio e bloqueia o quarto
-template consecutivo por empresa e telefone; qualquer mensagem recebida do usuário
-zera esse contador. Opt-outs registrados localmente sempre prevalecem sobre a resposta
+template consecutivo por empresa e telefone. `last_customer_reply_at` zera o contador
+somente se for posterior ao último aceite de envio conhecido; a fonte comercial deve
+fornecer esse horário de forma confiável. O envio de teste não consulta a fonte e não
+recebe esse reset. Opt-outs registrados localmente sempre prevalecem sobre a resposta
 da fonte.

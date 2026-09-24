@@ -268,7 +268,7 @@ export function DirectMessagesPage() {
       variables: directTestVariables,
       confirm_recipient_opt_in: directTestOptIn
     }),
-    onSuccess: (result) => setNotice(`Solicitação aceita pela Meta (${result.consecutive_template_sends}/3 sem resposta); entrega aguardando confirmação: ${result.wamid}`),
+    onSuccess: (result) => setNotice(`Solicitação enfileirada no middleware (${result.consecutive_template_sends}/3 sem resposta); entrega aguardando confirmação: ${result.delivery_id}`),
     onError: (error) => setNotice(error.message)
   });
 
@@ -376,7 +376,7 @@ export function DirectMessagesPage() {
         <button className="back" onClick={() => setSelectedTemplate(null)}>← VOLTAR PARA MENSAGENS</button>
         <p className="eyebrow blue">AGENTE</p>
         <h1>Mensagem direta</h1>
-        <p className="intro">Escolha com quem falar, quando, o que dizer e quem continua depois da resposta.</p>
+        <p className="intro">Escolha público, horário e mensagem. Respostas são tratadas pelo canal no middleware.</p>
         <div className="stepper">
           <button className={wizardStep === 1 ? "active" : "done"} onClick={() => setWizardStep(1)}><span>1</span> Público e momento</button>
           <button className={wizardStep === 2 ? "active" : ""} onClick={() => setWizardStep(2)}><span>2</span> Mensagem</button>
@@ -522,7 +522,7 @@ export function DirectMessagesPage() {
       <button className="back">← VOLTAR PARA O AGENTE</button>
       <p className="eyebrow blue">AGENTE</p>
       <h1>Mensagem direta</h1>
-      <p className="intro">Aqui o agente começa a conversa. Escolha com quem falar, quando, o que dizer e quem continua depois da resposta.</p>
+      <p className="intro">Escolha público, horário e mensagem. Respostas são tratadas pelo canal no middleware.</p>
       <div className="divider" />
       <div className="catalog-toolbar">
         <div className="tabs"><button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}>Minhas mensagens</button><button className={tab === "presets" ? "active" : ""} onClick={() => setTab("presets")}>Modelos prontos</button></div>
@@ -571,7 +571,7 @@ function PreviewModal({ item, organizationId, onClose, onUse }: { item: MessageT
         confirm_recipient_opt_in: testOptIn
       });
     },
-    onSuccess: (result) => setTestResult(`Solicitação aceita (${result.consecutive_template_sends}/3 sem resposta); entrega aguardando confirmação: ${result.wamid}`),
+    onSuccess: (result) => setTestResult(`Solicitação aceita (${result.consecutive_template_sends}/3 sem resposta); entrega aguardando confirmação: ${result.delivery_id}`),
     onError: (error) => setTestResult(error.message)
   });
   const testError = testInputError(testPhone, variableDefinitions, testVariables, testOptIn);

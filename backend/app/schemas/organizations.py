@@ -1,6 +1,7 @@
+import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.organization import WabaConnectionStatus
 
@@ -23,8 +24,16 @@ class WabaConnectionWrite(BaseModel):
     business_id: str | None = None
     waba_id: str | None = None
     phone_number_id: str | None = None
+    channel_account_id: str | None = None
     api_version: str = "v23.0"
     access_token: str | None = None
+
+    @field_validator("channel_account_id")
+    @classmethod
+    def validate_channel_account_id(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        return str(uuid.UUID(value))
 
 
 class WabaConnectionRead(BaseModel):
@@ -32,6 +41,7 @@ class WabaConnectionRead(BaseModel):
     business_id: str | None
     waba_id: str | None
     phone_number_id: str | None
+    channel_account_id: str | None
     api_version: str
     has_token: bool
     status: WabaConnectionStatus

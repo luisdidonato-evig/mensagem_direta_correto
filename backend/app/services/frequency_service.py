@@ -30,9 +30,7 @@ async def get_contact_messaging_state(
 async def _locked_state(
     db: AsyncSession, organization_id: str, phone_hash: str
 ) -> ContactMessagingState:
-    state = await get_contact_messaging_state(
-        db, organization_id, phone_hash, for_update=True
-    )
+    state = await get_contact_messaging_state(db, organization_id, phone_hash, for_update=True)
     if state is not None:
         return state
     values = {
@@ -47,23 +45,17 @@ async def _locked_state(
     if dialect_name == "postgresql":
         statement = postgresql_insert(ContactMessagingState).values(**values)
         await db.execute(
-            statement.on_conflict_do_nothing(
-                index_elements=["organization_id", "phone_hash"]
-            )
+            statement.on_conflict_do_nothing(index_elements=["organization_id", "phone_hash"])
         )
     elif dialect_name == "sqlite":
         statement = sqlite_insert(ContactMessagingState).values(**values)
         await db.execute(
-            statement.on_conflict_do_nothing(
-                index_elements=["organization_id", "phone_hash"]
-            )
+            statement.on_conflict_do_nothing(index_elements=["organization_id", "phone_hash"])
         )
     else:
         db.add(ContactMessagingState(**values))
         await db.flush()
-    state = await get_contact_messaging_state(
-        db, organization_id, phone_hash, for_update=True
-    )
+    state = await get_contact_messaging_state(db, organization_id, phone_hash, for_update=True)
     if state is None:
         raise RuntimeError("Falha ao criar estado de frequência do contato")
     return state
@@ -107,6 +99,31 @@ async def record_inbound_message(
     state.reserved_template_sends = 0
     state.last_inbound_at = datetime.now(UTC)
     return state, previous_count
+
+
+async def reconcile_customer_reply(
+    db: AsyncSession, organization_id: str, phone_hash: str, reply_at: datetime | None
+) -> bool:
+    """Use a trusted audience source reply timestamp as evidence after last send."""
+    if reply_at is None:
+        return False
+    state = await get_contact_messaging_state(db, organization_id, phone_hash, for_update=True)
+    if state is None or state.last_outbound_at is None:
+        return False
+    reply = reply_at if reply_at.tzinfo else reply_at.replace(tzinfo=UTC)
+    last_outbound = state.last_outbound_at
+    if last_outbound.tzinfo is None:
+        last_outbound = last_outbound.replace(tzinfo=UTC)
+    last_inbound = state.last_inbound_at
+    if last_inbound is not None and last_inbound.tzinfo is None:
+        last_inbound = last_inbound.replace(tzinfo=UTC)
+    if reply <= last_outbound or (last_inbound is not None and reply <= last_inbound):
+        return False
+    state.consecutive_template_sends = 0
+    state.reserved_template_sends = 0
+    state.last_inbound_at = reply
+    await db.flush()
+    return True
 
 
 async def blocked_phone_hashes(

@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import UTC, datetime
 
@@ -10,6 +11,8 @@ from app.core.auth import Principal, require_admin, require_operator
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.core.privacy import hash_phone
+from app.integrations.campaign_provider import build_campaign_provider
+from app.integrations.gateway.provider import GatewayProviderError
 from app.integrations.meta.provider import (
     MetaProviderError,
     WhatsAppProvider,
@@ -32,7 +35,6 @@ from app.services.audience_service import preview_audience
 from app.services.audit_service import add_audit
 from app.services.frequency_service import (
     confirm_template_send,
-    release_template_send,
     reserve_template_send,
 )
 from app.services.idempotency_service import run_idempotent
@@ -43,6 +45,7 @@ from app.services.template_service import (
     build_variable_examples,
     compile_components,
     sync_templates,
+    validate_dispatch_template,
 )
 
 router = APIRouter(prefix="/templates", tags=["templates"])
@@ -172,9 +175,7 @@ async def delete_template(
         select(Campaign.id).where(Campaign.template_id == template.id).limit(1)
     )
     child_revision = await db.scalar(
-        select(MessageTemplate.id)
-        .where(MessageTemplate.parent_template_id == template.id)
-        .limit(1)
+        select(MessageTemplate.id).where(MessageTemplate.parent_template_id == template.id).limit(1)
     )
     if referenced or child_revision:
         raise HTTPException(
@@ -338,6 +339,7 @@ async def submit_template(
             )
         except (ValueError, MetaProviderError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
         template.meta_template_id = str(response["id"])
         template.status = TemplateStatus(response.get("status", "PENDING"))
         actual_category = TemplateCategory(
@@ -352,6 +354,7 @@ async def submit_template(
             else None
         )
         template.submission_attempt += 1
+        template.submitted_at = datetime.now(UTC)
         add_audit(
             db,
             action="template.submitted",
@@ -401,9 +404,7 @@ async def create_utility_revision(
     if organization is None:
         raise HTTPException(status_code=404, detail="Empresa não encontrada")
     suffix = uuid.uuid4().hex[:8]
-    revision_name = build_company_meta_name(
-        organization.name, f"{source.name}_u_{suffix}"
-    )
+    revision_name = build_company_meta_name(organization.name, f"{source.name}_u_{suffix}")
     revision = MessageTemplate(
         organization_id=organization_id,
         name=revision_name,
@@ -461,68 +462,75 @@ async def test_send_template(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
     organization_id: str = Depends(get_organization_id),
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=512),
     _: Principal = Depends(require_admin),
-) -> TemplateTestSendResult:
+) -> TemplateTestSendResult | dict:
     template = await db.get(MessageTemplate, template_id)
     if template is None or template.organization_id != organization_id:
         raise HTTPException(status_code=404, detail="Template não encontrado")
-    if template.status != TemplateStatus.APPROVED:
-        raise HTTPException(
-            status_code=409,
-            detail="Envio de teste exige template aprovado pela Meta",
+    retry_digest = hashlib.sha256(f"{organization_id}:{idempotency_key}".encode()).hexdigest()
+
+    async def handler() -> TemplateTestSendResult:
+        if template.status != TemplateStatus.APPROVED:
+            raise HTTPException(
+                status_code=409, detail="Envio de teste exige template aprovado pela Meta"
+            )
+        try:
+            validate_dispatch_template(template)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        connection = await get_waba_connection(db, organization_id)
+        try:
+            provider = build_campaign_provider(settings, connection)
+        except GatewayProviderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        phone_hash = hash_phone(payload.phone_e164)
+        reserved, _ = await reserve_template_send(db, organization_id, phone_hash)
+        if not reserved:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Limite de 3 templates sem resposta atingido; aguarde uma mensagem do usuário"
+                ),
+            )
+        try:
+            components = build_send_components(template.variable_schema, payload.variables)
+            delivery_id = await provider.send_template(
+                recipient=payload.phone_e164,
+                template_name=template.name,
+                language=template.language,
+                components=components,
+                idempotency_key=f"template-test:{retry_digest}",
+            )
+            frequency_state = await confirm_template_send(db, organization_id, phone_hash)
+        except (ValueError, GatewayProviderError) as exc:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        add_audit(
+            db,
+            action="template.test_accepted",
+            resource_type="template",
+            resource_id=template.id,
+            details={
+                "phone_suffix": payload.phone_e164[-4:],
+                "variable_aliases": sorted(payload.variables),
+                "delivery_id": delivery_id,
+                "consecutive_template_sends": frequency_state.consecutive_template_sends,
+            },
+        )
+        return TemplateTestSendResult(
+            accepted=True,
+            delivery_id=delivery_id,
+            wamid=delivery_id,
+            consecutive_template_sends=frequency_state.consecutive_template_sends,
         )
 
-    connection = await get_waba_connection(db, organization_id)
-    provider = build_provider_for_connection(
-        settings.meta_mode, connection, settings.meta_graph_version
-    )
-    phone_hash = hash_phone(payload.phone_e164)
-    reserved, _ = await reserve_template_send(db, organization_id, phone_hash)
-    if not reserved:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Limite de 3 templates sem resposta atingido; "
-                "aguarde uma mensagem do usuário"
-            ),
-        )
-    try:
-        components = build_send_components(template.variable_schema, payload.variables)
-        template_payload: dict = {
-            "name": template.name,
-            "language": {"code": template.language},
-        }
-        if components:
-            template_payload["components"] = components
-        wamid = await provider.send_template(
-            {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": payload.phone_e164.lstrip("+"),
-                "type": "template",
-                "template": template_payload,
-            }
-        )
-        frequency_state = await confirm_template_send(db, organization_id, phone_hash)
-    except (ValueError, MetaProviderError) as exc:
-        await release_template_send(db, organization_id, phone_hash)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    add_audit(
+    return await run_idempotent(
         db,
-        action="template.test_sent",
-        resource_type="template",
-        resource_id=template.id,
-        details={
-            "phone_suffix": payload.phone_e164[-4:],
-            "variable_aliases": sorted(payload.variables),
-            "wamid": wamid,
-            "consecutive_template_sends": frequency_state.consecutive_template_sends,
-        },
-    )
-    await db.commit()
-    return TemplateTestSendResult(
-        accepted=True,
-        wamid=wamid,
-        consecutive_template_sends=frequency_state.consecutive_template_sends,
+        scope="template.test_send",
+        namespace=template.id,
+        key=retry_digest,
+        status_code=status.HTTP_200_OK,
+        handler=handler,
     )

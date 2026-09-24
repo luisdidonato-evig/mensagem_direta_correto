@@ -189,7 +189,12 @@ async def apply_persisted_compliance(
             )
         )
     )
-    from app.services.frequency_service import blocked_phone_hashes
+    from app.services.frequency_service import blocked_phone_hashes, reconcile_customer_reply
+
+    for candidate in candidates:
+        await reconcile_customer_reply(
+            db, organization_id, hash_phone(candidate.phone_e164), candidate.last_customer_reply_at
+        )
 
     frequency_blocked = await blocked_phone_hashes(db, organization_id, hashes)
     contact_ids = [candidate.id for candidate in candidates]

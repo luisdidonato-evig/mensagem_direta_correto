@@ -1,5 +1,7 @@
 # Planejamento — Mensagem Direta via WhatsApp/Meta
 
+> Integração inicial: Mensagem Direta → gateway Go → Meta. Mensagem Direta continua dona de WABA, templates, campanhas, consentimento e auditoria. O fluxo futuro será gateway → Meta → callback de status do gateway → Mensagem Direta; webhook de status do gateway fica fora deste passo.
+
 ## 1. Objetivo
 
 Construir um serviço independente de mensagem direta que permita:
@@ -97,12 +99,14 @@ flowchart LR
     UI[React + TypeScript] -->|REST / OpenAPI| API[FastAPI]
     API --> PG[(PostgreSQL)]
     API --> REDIS[(Redis)]
-    API --> META[Meta Graph API]
+    API --> GATEWAY[Gateway Go]
+    GATEWAY --> META[Meta Graph API]
     API --> SOURCE[Origem de clientes e jornadas]
     REDIS --> WORKER[Celery workers]
     WORKER --> PG
-    WORKER --> META
-    META -->|Webhooks HTTPS| API
+    WORKER --> GATEWAY
+    META -->|Callback configurado no gateway| GATEWAY
+    GATEWAY -.->|Status futuro| API
     API --> AUDIT[(Eventos e auditoria)]
 ```
 
@@ -113,7 +117,7 @@ flowchart LR
 - SQLAlchemy 2 assíncrono e Alembic;
 - PostgreSQL como fonte de verdade;
 - Redis + Celery para fila, agendamentos e retentativas;
-- `httpx` para a Graph API;
+- `httpx` para adapters Meta e gateway Go;
 - logs estruturados, métricas e tracing;
 - testes com `pytest`, `pytest-asyncio` e `respx`;
 - configuração por ambiente com `pydantic-settings`;

@@ -25,6 +25,7 @@ export function TemplateCard({ item, onUse, onView, onDelete }: Props) {
       </div>
       <h3>{"display_name" in item ? item.display_name : item.name}</h3>
       {isTemplate(item) && <p className="muted">Meta: {item.name}</p>}
+      {isTemplate(item) && item.status !== "DRAFT" && <p className="muted">{item.last_synced_at ? `Sincronizado em ${new Date(item.last_synced_at).toLocaleString("pt-BR")}` : "Ainda sem sincronização após submissão"}</p>}
       <p className="description">{"description" in item ? item.description : "Template sincronizado com a conta Meta."}</p>
       <div className="message-snippet">{body}</div>
       {!isTemplate(item) && <div className="reach"><b>{item.estimated_reach.toLocaleString("pt-BR")}</b> pessoas</div>}

@@ -96,9 +96,7 @@ async def _retry_handoffs() -> int:
 
 
 async def _sync_all_organizations() -> dict[str, int]:
-    """Periodic template sync per org — the safety net for a lost webhook
-    (PLANEJAMENTO.md §6.3: "reconciliação periódica como proteção contra
-    webhook perdido")."""
+    """Periodic Graph API template sync per organization; Meta webhook is gateway-owned."""
     settings = get_settings()
     results: dict[str, int] = {}
     async with SessionLocal() as db:

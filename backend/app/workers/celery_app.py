@@ -26,7 +26,7 @@ celery_app.conf.update(
         },
         "sync-templates-all-organizations": {
             "task": "scheduler.sync_all_organizations",
-            # 30 min — rede de segurança pra webhook perdido (PLANEJAMENTO.md §6.3)
+            # 30 min — fonte de status de template sem webhook neste serviço.
             "schedule": 1800.0,
         },
         "dispatch-due-campaigns": {
@@ -43,7 +43,7 @@ celery_app.conf.update(
 
 class DispatchStillPending(Exception):
     """Raised to trigger a Celery retry — some recipients hit a transient
-    Meta error and are still waiting their turn (see campaign_dispatcher)."""
+    middleware error and are still waiting their turn (see campaign_dispatcher)."""
 
 
 def run_async(coroutine: Coroutine[Any, Any, Any]) -> Any:
