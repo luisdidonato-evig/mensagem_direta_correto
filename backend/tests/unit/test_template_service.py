@@ -16,6 +16,7 @@ from app.integrations.meta.provider import (
     MockWhatsAppProvider,
 )
 from app.models import MessageTemplate, Organization
+from app.models.template import TemplateStatus
 from app.schemas.templates import TemplateDraftCreate, TemplateTestSendRequest
 from app.services.template_service import (
     build_company_meta_name,
@@ -23,6 +24,7 @@ from app.services.template_service import (
     compile_components,
     infer_variable_schema,
     sync_templates,
+    validate_dispatch_template,
 )
 
 
@@ -62,6 +64,8 @@ async def test_draft_uses_company_prefix_for_meta_name() -> None:
         assert draft.name == "empresa_agil_documento_pendente"
 
     await engine.dispose()
+
+
 def test_compiles_aliases_to_stable_meta_positions() -> None:
     components = [{"type": "BODY", "text": "Oi, {{nome}}! Veja {{produto}}."}]
     schema = {
@@ -105,6 +109,23 @@ def test_builds_ordered_body_parameters_for_send() -> None:
 def test_rejects_missing_required_send_parameter() -> None:
     with pytest.raises(ValueError, match="nome"):
         build_send_components({"1": {"alias": "nome", "required": True}}, {})
+
+
+def test_dispatch_validation_rejects_unrenderable_components() -> None:
+    template = MessageTemplate(
+        components=[
+            {"type": "HEADER", "format": "IMAGE"},
+            {"type": "BODY", "text": "Oi {{1}}"},
+        ],
+        variable_schema={"1": {"alias": "nome", "source": "contact.first_name"}},
+    )
+    with pytest.raises(ValueError, match="cabeçalho"):
+        validate_dispatch_template(template)
+    template.components = [{"type": "BODY", "text": "Oi {{1}}"}]
+    validate_dispatch_template(template)
+    template.variable_schema = {}
+    with pytest.raises(ValueError, match="schema"):
+        validate_dispatch_template(template)
 
 
 def test_infers_sources_for_synced_meta_template() -> None:
@@ -176,6 +197,39 @@ async def test_same_meta_template_can_be_synced_for_two_organizations() -> None:
         count = await db.scalar(select(func.count(MessageTemplate.id)))
 
     assert count == 2
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sync_correlates_changed_external_id_by_name_and_language() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", poolclass=StaticPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with sessions() as db:
+        db.add(Organization(id="org", name="Org"))
+        await db.commit()
+        provider = MockWhatsAppProvider()
+        await sync_templates(db, provider, "org")
+        provider.list_templates = AsyncMock(
+            return_value=[
+                {
+                    "id": "replacement-id",
+                    "name": "simulacao_parada",
+                    "language": "pt_BR",
+                    "category": "UTILITY",
+                    "status": "PAUSED",
+                    "components": [],
+                }
+            ]
+        )
+        created, updated = await sync_templates(db, provider, "org")
+        templates = list(await db.scalars(select(MessageTemplate)))
+        assert (created, updated) == (0, 1)
+        assert len(templates) == 1
+        assert templates[0].meta_template_id == "replacement-id"
+        assert templates[0].status == TemplateStatus.PAUSED
+        assert templates[0].last_synced_at is not None
     await engine.dispose()
 
 

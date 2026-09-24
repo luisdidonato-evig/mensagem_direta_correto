@@ -40,7 +40,6 @@ class Settings(BaseSettings):
 
     gateway_url: str = ""
     gateway_internal_key: str = ""
-    gateway_channel_account_id: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -68,19 +67,9 @@ class Settings(BaseSettings):
         return value
 
     def validate_live_meta(self) -> None:
-        if self.gateway_dispatch_enabled:
-            return
-        if self.meta_mode != "live":
-            return
-        missing = [
-            name
-            for name, value in {
-                "META_APP_SECRET": self.meta_app_secret,
-            }.items()
-            if not value
-        ]
-        if missing:
-            raise RuntimeError(f"Configuração Meta incompleta: {', '.join(missing)}")
+        # Template administration needs per-tenant WABA credentials, checked by its provider.
+        # This service no longer receives Meta webhooks and needs no app secret.
+        return
 
     @property
     def gateway_dispatch_enabled(self) -> bool:
@@ -99,10 +88,6 @@ class Settings(BaseSettings):
         ]
         if missing:
             raise RuntimeError(f"Configuração Gateway incompleta: {', '.join(missing)}")
-        if self.app_env == "production" and not self.gateway_channel_account_id.strip():
-            raise RuntimeError(
-                "GATEWAY_CHANNEL_ACCOUNT_ID é obrigatório em produção quando o gateway está ativo"
-            )
 
     def validate_runtime(self) -> None:
         self.validate_live_meta()

@@ -1,7 +1,8 @@
 # ADR 0002 — Multi-tenant via `organization_id`, sem isolamento de banco
 
 ## Status
-Aceito (2026-09-21).
+Histórico (2026-09-21). A decisão atual sobre webhook e envio está em
+[`../arquitetura-mensagem-direta.md`](../arquitetura-mensagem-direta.md).
 
 ## Contexto
 O produto passou de single-tenant (uma WABA fixa via `.env`) para gerenciar

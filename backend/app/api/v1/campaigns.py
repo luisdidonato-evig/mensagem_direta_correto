@@ -9,6 +9,8 @@ from app.core.auth import Principal, require_operator
 from app.core.config import Settings, get_settings
 from app.core.database import get_db
 from app.integrations.audience.provider import AudienceSource, AudienceSourceError
+from app.integrations.campaign_provider import build_campaign_provider
+from app.integrations.gateway.provider import GatewayProviderError
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.template import MessageTemplate, TemplateStatus
 from app.schemas.campaigns import (
@@ -21,6 +23,8 @@ from app.services.audience_service import apply_persisted_compliance, preview_au
 from app.services.audit_service import add_audit
 from app.services.campaign_dispatcher import dispatch_campaign
 from app.services.idempotency_service import run_idempotent
+from app.services.organization_service import get_waba_connection
+from app.services.template_service import validate_dispatch_template
 from app.workers.celery_app import dispatch_campaign_task
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -143,7 +147,7 @@ async def get_campaign_results(
 
 
 async def validate_campaign_entity(
-    campaign: Campaign, db: AsyncSession, source: AudienceSource
+    campaign: Campaign, db: AsyncSession, source: AudienceSource, settings: Settings
 ) -> CampaignValidation:
     from app.schemas.campaigns import AudienceRules
 
@@ -151,8 +155,22 @@ async def validate_campaign_entity(
     template = await db.get(MessageTemplate, campaign.template_id)
     if template is None:
         errors.append("Template não encontrado")
+    elif template.organization_id != campaign.organization_id:
+        errors.append("Template pertence a outra organização")
     elif template.status != TemplateStatus.APPROVED:
         errors.append("O template precisa estar aprovado pela Meta")
+    elif template.language != "pt_BR":
+        errors.append("Middleware só renderiza templates pt_BR atualmente")
+    else:
+        try:
+            validate_dispatch_template(template)
+        except ValueError as exc:
+            errors.append(str(exc))
+    connection = await get_waba_connection(db, campaign.organization_id)
+    try:
+        build_campaign_provider(settings, connection)
+    except GatewayProviderError as exc:
+        errors.append(str(exc))
     rules = AudienceRules.model_validate(campaign.audience_rules)
     try:
         candidates = await source.list_candidates(campaign.organization_id, campaign.product)
@@ -177,6 +195,7 @@ async def validate_campaign(
     db: AsyncSession = Depends(get_db),
     organization_id: str = Depends(get_organization_id),
     source: AudienceSource = Depends(get_audience_source),
+    settings: Settings = Depends(get_settings),
     _: Principal = Depends(require_operator),
 ) -> CampaignValidation:
     campaign = await db.scalar(
@@ -186,7 +205,7 @@ async def validate_campaign(
     )
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campanha não encontrada")
-    result = await validate_campaign_entity(campaign, db, source)
+    result = await validate_campaign_entity(campaign, db, source, settings)
     if result.valid:
         campaign.status = CampaignStatus.VALIDATED
         add_audit(
@@ -222,7 +241,7 @@ async def send_campaign(
             raise HTTPException(status_code=404, detail="Campanha não encontrada")
         if campaign.status not in {CampaignStatus.DRAFT, CampaignStatus.VALIDATED}:
             raise HTTPException(status_code=409, detail="Campanha não está disponível para envio")
-        validation = await validate_campaign_entity(campaign, db, source)
+        validation = await validate_campaign_entity(campaign, db, source, settings)
         if not validation.valid:
             raise HTTPException(status_code=422, detail=validation.errors)
         campaign.status = CampaignStatus.QUEUED
@@ -278,7 +297,7 @@ async def schedule_campaign(
         scheduled_at = scheduled_at.replace(tzinfo=UTC)
     if scheduled_at <= datetime.now(UTC):
         raise HTTPException(status_code=422, detail="scheduled_at deve estar no futuro")
-    validation = await validate_campaign_entity(campaign, db, source)
+    validation = await validate_campaign_entity(campaign, db, source, settings)
     if not validation.valid:
         raise HTTPException(status_code=422, detail=validation.errors)
     campaign.status = CampaignStatus.SCHEDULED

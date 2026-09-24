@@ -1,3 +1,4 @@
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -11,8 +12,6 @@ from app.core.privacy import hash_phone
 from app.integrations.audience.provider import AudienceSourceError, build_audience_source
 from app.integrations.campaign_provider import build_campaign_provider
 from app.integrations.gateway.provider import GatewayProviderError
-from app.integrations.meta.circuit_breaker import meta_circuit_breaker
-from app.integrations.meta.provider import MetaProviderError
 from app.models.campaign import Campaign, CampaignRecipient, CampaignStatus, RecipientStatus
 from app.models.compliance import OptOut
 from app.models.template import MessageTemplate, TemplateStatus
@@ -29,7 +28,7 @@ from app.services.frequency_service import (
     reserve_template_send,
 )
 from app.services.organization_service import get_waba_connection
-from app.services.template_service import build_send_components
+from app.services.template_service import build_send_components, validate_dispatch_template
 
 MAX_SEND_RETRIES = 5
 DISPATCH_LEASE = timedelta(minutes=15)
@@ -44,6 +43,12 @@ _TERMINAL_STATUSES = {
     RecipientStatus.SUPPRESSED,
     RecipientStatus.OPTED_OUT,
 }
+
+
+def recipient_dispatch_key(campaign_id: str, external_contact_id: str) -> str:
+    """Stable across a DB rollback after the gateway accepted a request."""
+    contact_digest = hashlib.sha256(external_contact_id.encode("utf-8")).hexdigest()
+    return f"campaign:{campaign_id}:contact:{contact_digest}"
 
 
 def resolve_template_variables(contact, variable_schema: dict, mapping: dict) -> dict:
@@ -97,7 +102,11 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
         await db.commit()
 
         template = await db.get(MessageTemplate, campaign.template_id)
-        if template is None or template.status != TemplateStatus.APPROVED:
+        if (
+            template is None
+            or template.organization_id != campaign.organization_id
+            or template.status != TemplateStatus.APPROVED
+        ):
             campaign.status = CampaignStatus.FAILED
             campaign.dispatch_lease_owner = None
             campaign.dispatch_lease_until = None
@@ -111,10 +120,26 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
             await db.commit()
             return campaign.status
 
+        try:
+            validate_dispatch_template(template)
+        except ValueError as exc:
+            campaign.status = CampaignStatus.FAILED
+            campaign.dispatch_lease_owner = None
+            campaign.dispatch_lease_until = None
+            add_audit(
+                db,
+                action="campaign.dispatch_failed",
+                resource_type="campaign",
+                resource_id=campaign.id,
+                details={"reason": "unsupported_template", "detail": str(exc)},
+            )
+            await db.commit()
+            return campaign.status
+
         connection = await get_waba_connection(db, campaign.organization_id)
         try:
             provider = build_campaign_provider(settings, connection)
-        except (MetaProviderError, GatewayProviderError) as exc:
+        except GatewayProviderError as exc:
             campaign.status = CampaignStatus.FAILED
             campaign.dispatch_lease_owner = None
             campaign.dispatch_lease_until = None
@@ -144,7 +169,6 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
         )
         failures = 0
         pending_retry = False
-        breaker_key = campaign.organization_id
 
         for contact in eligible_contacts(rules, campaign.product, candidates):
             variables = resolve_template_variables(
@@ -211,18 +235,6 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                 await db.commit()
                 continue
 
-            if not settings.gateway_dispatch_enabled and meta_circuit_breaker.is_open(breaker_key):
-                # Meta está instável para esta organização: não bate na API de
-                # novo agora, só deixa o destinatário pendente pra próxima
-                # tentativa (com backoff/jitter no nível do worker Celery).
-                pending_retry = True
-                if frequency_reserved:
-                    await release_template_send(db, campaign.organization_id, phone_hash)
-                campaign.updated_at = datetime.now(UTC)
-                campaign.dispatch_lease_until = campaign.updated_at + DISPATCH_LEASE
-                await db.commit()
-                continue
-
             try:
                 components = build_send_components(template.variable_schema, variables)
                 recipient.wamid = await provider.send_template(
@@ -230,12 +242,10 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                     template_name=template.name,
                     language=template.language,
                     components=components,
-                    idempotency_key=f"campaign:{campaign.id}:recipient:{recipient.id}",
+                    idempotency_key=recipient_dispatch_key(campaign.id, contact.id),
                 )
                 recipient.status = RecipientStatus.ACCEPTED
-                state = await confirm_template_send(
-                    db, campaign.organization_id, phone_hash
-                )
+                state = await confirm_template_send(db, campaign.organization_id, phone_hash)
                 recipient.eligibility_snapshot = {
                     **campaign.audience_rules,
                     "consecutive_template_sends": state.consecutive_template_sends,
@@ -252,17 +262,13 @@ async def dispatch_campaign(campaign_id: str) -> CampaignStatus:
                 )
                 recipient.failure_code = None
                 recipient.failure_detail = None
-                if not settings.gateway_dispatch_enabled:
-                    meta_circuit_breaker.record_success(breaker_key)
-            except (MetaProviderError, GatewayProviderError, ValueError) as exc:
+            except (GatewayProviderError, ValueError) as exc:
                 if frequency_reserved:
                     await release_template_send(db, campaign.organization_id, phone_hash)
-                transient = isinstance(exc, (MetaProviderError, GatewayProviderError)) and exc.transient
+                transient = isinstance(exc, GatewayProviderError) and exc.transient
                 recipient.failure_code = getattr(exc, "code", "invalid_variables")
                 recipient.failure_detail = str(exc)
                 if transient:
-                    if not settings.gateway_dispatch_enabled:
-                        meta_circuit_breaker.record_failure(breaker_key)
                     recipient.retry_count += 1
                     if recipient.retry_count >= MAX_SEND_RETRIES:
                         recipient.status = RecipientStatus.FAILED

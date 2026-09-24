@@ -34,6 +34,7 @@ def _to_connection_read(
             business_id=None,
             waba_id=None,
             phone_number_id=None,
+            channel_account_id=None,
             api_version="v23.0",
             has_token=False,
             status=WabaConnectionStatus.DISCONNECTED,
@@ -45,6 +46,7 @@ def _to_connection_read(
         business_id=connection.business_id,
         waba_id=connection.waba_id,
         phone_number_id=connection.phone_number_id,
+        channel_account_id=connection.channel_account_id,
         api_version=connection.api_version,
         has_token=bool(connection.access_token),
         status=connection.status,
@@ -124,6 +126,7 @@ async def upsert_waba_connection(
     connection.business_id = payload.business_id
     connection.waba_id = payload.waba_id
     connection.phone_number_id = payload.phone_number_id
+    connection.channel_account_id = payload.channel_account_id
     connection.api_version = payload.api_version
     if payload.access_token:
         connection.access_token = encrypt_token(payload.access_token, settings)

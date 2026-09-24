@@ -1,3 +1,5 @@
+"""Legacy Meta webhook handlers. Not registered; middleware owns Meta callbacks."""
+
 import hashlib
 import hmac
 import json

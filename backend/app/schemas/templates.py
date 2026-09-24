@@ -50,6 +50,8 @@ class TemplateRead(BaseModel):
     submission_attempt: int
     category_changed_at: datetime | None
     rejection_reason: str | None
+    submitted_at: datetime | None
+    last_synced_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -99,5 +101,6 @@ class TemplateTestSendRequest(BaseModel):
 
 class TemplateTestSendResult(BaseModel):
     accepted: bool
+    delivery_id: str
     wamid: str
     consecutive_template_sends: int

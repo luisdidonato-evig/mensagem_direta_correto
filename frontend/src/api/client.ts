@@ -117,6 +117,7 @@ export const api = {
     payload: { phone_e164: string; variables: Record<string, string>; confirm_recipient_opt_in: boolean }
   ) => request<TemplateTestSendResult>(withOrg(`/templates/${id}/test-send`, organizationId), {
     method: "POST",
+    headers: { "Idempotency-Key": crypto.randomUUID() },
     body: JSON.stringify(payload)
   }),
   deleteTemplate: (id: string, organizationId: string) => request<void>(withOrg(`/templates/${id}`, organizationId), { method: "DELETE" }),

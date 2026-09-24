@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.meta.provider import WhatsAppProvider
 from app.models.template import MessageTemplate, TemplateCategory, TemplateStatus
+from app.services.audit_service import add_audit
 
 ALIAS_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 ALIAS_POSITION_PATTERN = re.compile(r"{{\s*(\d+)\s*}}")
@@ -138,18 +139,93 @@ def build_send_components(variable_schema: dict, variables: dict) -> list[dict]:
     return [{"type": "body", "parameters": parameters}] if parameters else []
 
 
+def validate_dispatch_template(template: MessageTemplate) -> None:
+    """Reject template features that the current middleware request cannot render."""
+    components = compile_components(template.components, template.variable_schema)
+    body_positions: set[int] = set()
+    for component in components:
+        component_type = str(component.get("type", "")).upper()
+        if component_type == "BODY":
+            body_positions.update(
+                int(value)
+                for value in ALIAS_POSITION_PATTERN.findall(str(component.get("text", "")))
+            )
+        elif component_type == "HEADER":
+            if str(
+                component.get("format", "TEXT")
+            ).upper() != "TEXT" or ALIAS_POSITION_PATTERN.search(str(component.get("text", ""))):
+                raise ValueError("Middleware não suporta parâmetros de cabeçalho")
+        elif component_type == "BUTTONS":
+            for button in component.get("buttons", []):
+                if str(button.get("type", "")).upper() not in {
+                    "QUICK_REPLY",
+                    "URL",
+                    "PHONE_NUMBER",
+                }:
+                    raise ValueError("Middleware não suporta esse tipo de botão no template")
+                if ALIAS_POSITION_PATTERN.search(
+                    str(button.get("url", ""))
+                ) or ALIAS_PATTERN.search(str(button.get("url", ""))):
+                    raise ValueError("Middleware não suporta parâmetros de botão")
+    schema_positions = {int(position) for position in template.variable_schema}
+    if body_positions != schema_positions or body_positions != set(
+        range(1, len(body_positions) + 1)
+    ):
+        raise ValueError("Variáveis BODY não correspondem ao schema do template")
+    if len(body_positions) > 9:
+        raise ValueError("Middleware suporta até 9 parâmetros posicionais")
+
+
 async def sync_templates(
     db: AsyncSession, provider: WhatsAppProvider, organization_id: str
 ) -> tuple[int, int]:
     created = 0
     updated = 0
-    for remote in await provider.list_templates():
+    remote_templates = await provider.list_templates()
+    remote_ids: set[str] = set()
+    for remote in remote_templates:
+        if not remote.get("id") or not remote.get("name"):
+            add_audit(
+                db,
+                action="template.sync_inconsistency",
+                resource_type="waba",
+                resource_id=organization_id,
+                details={"reason": "remote_missing_id_or_name"},
+            )
+            continue
+        if (
+            remote.get("status", "PENDING") not in TemplateStatus._value2member_map_
+            or remote.get("category", "MARKETING") not in TemplateCategory._value2member_map_
+            or (
+                remote.get("correct_category")
+                and remote["correct_category"] not in TemplateCategory._value2member_map_
+            )
+        ):
+            add_audit(
+                db,
+                action="template.sync_inconsistency",
+                resource_type="waba",
+                resource_id=organization_id,
+                details={"reason": "unsupported_remote_status_or_category", "name": remote["name"]},
+            )
+            continue
+        remote_ids.add(str(remote["id"]))
+        synced_at = datetime.now(UTC)
         statement = select(MessageTemplate).where(
             MessageTemplate.organization_id == organization_id,
             MessageTemplate.meta_template_id == str(remote["id"]),
             MessageTemplate.language == remote.get("language", "pt_BR"),
         )
         template = await db.scalar(statement)
+        if template is None:
+            template = await db.scalar(
+                select(MessageTemplate).where(
+                    MessageTemplate.organization_id == organization_id,
+                    MessageTemplate.name == remote["name"],
+                    MessageTemplate.language == remote.get("language", "pt_BR"),
+                    MessageTemplate.status != TemplateStatus.DRAFT,
+                )
+            )
         if template is None:
             components = remote.get("components", [])
             template = MessageTemplate(
@@ -169,13 +245,13 @@ async def sync_templates(
                 components=components,
                 variable_schema=infer_variable_schema(components),
                 source="META",
+                last_synced_at=synced_at,
             )
             db.add(template)
             created += 1
         else:
-            remote_category = TemplateCategory(
-                remote.get("category", template.category.value)
-            )
+            template.meta_template_id = str(remote["id"])
+            remote_category = TemplateCategory(remote.get("category", template.category.value))
             if remote_category != template.category:
                 template.category_changed_at = datetime.now(UTC)
             template.category = remote_category
@@ -188,6 +264,25 @@ async def sync_templates(
             template.components = remote.get("components", template.components)
             template.variable_schema = infer_variable_schema(template.components)
             template.rejection_reason = remote.get("rejected_reason")
+            template.last_synced_at = synced_at
             updated += 1
+    local_external_ids = await db.scalars(
+        select(MessageTemplate.meta_template_id).where(
+            MessageTemplate.organization_id == organization_id,
+            MessageTemplate.meta_template_id.is_not(None),
+        )
+    )
+    for external_id in local_external_ids:
+        if external_id not in remote_ids:
+            add_audit(
+                db,
+                action="template.sync_inconsistency",
+                resource_type="template",
+                resource_id=external_id,
+                details={
+                    "reason": "local_external_id_missing_remotely",
+                    "organization_id": organization_id,
+                },
+            )
     await db.commit()
     return created, updated

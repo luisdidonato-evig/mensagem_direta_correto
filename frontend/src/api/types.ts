@@ -27,6 +27,8 @@ export interface MessageTemplate {
   submission_attempt: number;
   category_changed_at: string | null;
   rejection_reason: string | null;
+  submitted_at: string | null;
+  last_synced_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -94,6 +96,7 @@ export interface WabaConnection {
   business_id: string | null;
   waba_id: string | null;
   phone_number_id: string | null;
+  channel_account_id: string | null;
   api_version: string;
   has_token: boolean;
   status: WabaConnectionStatus;
@@ -105,6 +108,7 @@ export interface WabaConnectionWrite {
   business_id: string | null;
   waba_id: string | null;
   phone_number_id: string | null;
+  channel_account_id: string | null;
   api_version: string;
   access_token?: string | null;
 }
@@ -116,6 +120,7 @@ export interface WabaConnectionTestResult {
 
 export interface TemplateTestSendResult {
   accepted: boolean;
+  delivery_id: string;
   wamid: string;
   consecutive_template_sends: number;
 }

@@ -16,6 +16,18 @@ const labels: Record<string, string> = {
   OPTED_OUT: "Opt-out"
 };
 
+const campaignLabels: Record<string, string> = {
+  DRAFT: "Rascunho",
+  VALIDATED: "Validada",
+  SCHEDULED: "Agendada",
+  QUEUED: "Na fila",
+  SENDING: "Enfileirando",
+  COMPLETED: "Enfileiramento concluído",
+  PARTIAL_FAILURE: "Falha parcial no enfileiramento",
+  CANCELLED: "Cancelada",
+  FAILED: "Falhou"
+};
+
 export function ResultsPage() {
   const { organizationId } = useOrganization();
   const queryClient = useQueryClient();
@@ -52,20 +64,20 @@ export function ResultsPage() {
     <section className="page results-page">
       <p className="eyebrow blue">OPERAR</p>
       <h1>Resultados</h1>
-      <p className="intro">Acompanhe processamento, entrega e resposta das mensagens diretas.</p>
+      <p className="intro">Acompanhe processamento e aceite dos disparos pelo middleware.</p>
       <div className="divider" />
       {(!organizationId || campaigns.isLoading) && <div className="empty">Carregando campanhas…</div>}
       {organizationId && !campaigns.isLoading && !campaigns.data?.length && <div className="empty"><h3>Nenhuma campanha executada.</h3><p>Crie uma mensagem direta para começar.</p></div>}
       {campaigns.data?.length ? <div className="results-layout">
         <aside className="campaign-list">
           <h2>Campanhas</h2>
-          {campaigns.data.map((campaign) => <button key={campaign.id} className={campaign.id === selectedCampaign?.id ? "active" : ""} onClick={() => setSelectedId(campaign.id)}><span>{campaign.name}</span><small>{campaign.product ?? "Sem produto"} · {new Date(campaign.created_at).toLocaleDateString("pt-BR")}</small><b>{campaign.status}</b></button>)}
+          {campaigns.data.map((campaign) => <button key={campaign.id} className={campaign.id === selectedCampaign?.id ? "active" : ""} onClick={() => setSelectedId(campaign.id)}><span>{campaign.name}</span><small>{campaign.product ?? "Sem produto"} · {new Date(campaign.created_at).toLocaleDateString("pt-BR")}</small><b>{campaignLabels[campaign.status] ?? campaign.status}</b></button>)}
         </aside>
         <div className="result-detail">
-          <div className="result-heading"><div><p className="eyebrow">CAMPANHA</p><h2>{selectedCampaign?.name}</h2><span className="muted">{selectedCampaign?.product} · {selectedCampaign?.timezone}</span></div><div><span className={`campaign-state ${(results.data?.campaign_status ?? selectedCampaign?.status ?? "DRAFT").toLowerCase()}`}>{results.data?.campaign_status ?? selectedCampaign?.status}</span>{["DRAFT", "VALIDATED", "SCHEDULED", "QUEUED"].includes(selectedCampaign?.status ?? "") && <button className="ghost" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate()}>Cancelar campanha</button>}</div></div>
+          <div className="result-heading"><div><p className="eyebrow">CAMPANHA</p><h2>{selectedCampaign?.name}</h2><span className="muted">{selectedCampaign?.product} · {selectedCampaign?.timezone}</span></div><div><span className={`campaign-state ${(results.data?.campaign_status ?? selectedCampaign?.status ?? "DRAFT").toLowerCase()}`}>{campaignLabels[results.data?.campaign_status ?? selectedCampaign?.status ?? ""] ?? results.data?.campaign_status ?? selectedCampaign?.status}</span>{["DRAFT", "VALIDATED", "SCHEDULED", "QUEUED"].includes(selectedCampaign?.status ?? "") && <button className="ghost" disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate()}>Cancelar campanha</button>}</div></div>
           {results.isLoading ? <div className="empty">Consolidando resultados…</div> : <>
             <div className="metric-grid"><div className="metric total"><span>Total processado</span><b>{results.data?.total ?? 0}</b></div>{Object.entries(labels).map(([key, label]) => <div className="metric" key={key}><span>{label}</span><b>{results.data?.by_status[key] ?? 0}</b></div>)}</div>
-            <div className="result-note"><b>Atualização por webhook</b><p>Estados nunca regridem. Eventos duplicados são descartados pelo backend e campanhas em andamento são atualizadas automaticamente.</p></div>
+            <div className="result-note"><b>Status disponível</b><p>Campanha concluída significa processamento da fila concluído. Aceito significa enfileirado pelo middleware. Entrega, leitura e resposta só aparecem para registros históricos com evidência; eventos novos ainda não são repassados ao Mensagem Direta.</p></div>
           </>}
         </div>
       </div> : null}

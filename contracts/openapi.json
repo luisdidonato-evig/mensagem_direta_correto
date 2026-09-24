@@ -1046,6 +1046,17 @@
             "description": "Organização atual. Padrão: organização única do ambiente."
           },
           {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
             "name": "Authorization",
             "in": "header",
             "required": false,
@@ -2147,94 +2158,6 @@
         }
       }
     },
-    "/api/v1/webhooks/meta": {
-      "get": {
-        "tags": [
-          "webhooks"
-        ],
-        "summary": "Verify Webhook",
-        "operationId": "verify_webhook_api_v1_webhooks_meta_get",
-        "parameters": [
-          {
-            "name": "hub.mode",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hub.Mode"
-            }
-          },
-          {
-            "name": "hub.verify_token",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hub.Verify Token"
-            }
-          },
-          {
-            "name": "hub.challenge",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Hub.Challenge"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "webhooks"
-        ],
-        "summary": "Receive Webhook",
-        "operationId": "receive_webhook_api_v1_webhooks_meta_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "anyOf": [
-                      {
-                        "type": "boolean"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "title": "Response Receive Webhook Api V1 Webhooks Meta Post"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/health": {
       "get": {
         "tags": [
@@ -3093,6 +3016,30 @@
             ],
             "title": "Rejection Reason"
           },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -3123,6 +3070,8 @@
           "submission_attempt",
           "category_changed_at",
           "rejection_reason",
+          "submitted_at",
+          "last_synced_at",
           "created_at",
           "updated_at"
         ],
@@ -3171,6 +3120,10 @@
             "type": "boolean",
             "title": "Accepted"
           },
+          "delivery_id": {
+            "type": "string",
+            "title": "Delivery Id"
+          },
           "wamid": {
             "type": "string",
             "title": "Wamid"
@@ -3183,6 +3136,7 @@
         "type": "object",
         "required": [
           "accepted",
+          "delivery_id",
           "wamid",
           "consecutive_template_sends"
         ],
@@ -3267,6 +3221,17 @@
             ],
             "title": "Phone Number Id"
           },
+          "channel_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Account Id"
+          },
           "api_version": {
             "type": "string",
             "title": "Api Version"
@@ -3302,6 +3267,7 @@
           "business_id",
           "waba_id",
           "phone_number_id",
+          "channel_account_id",
           "api_version",
           "has_token",
           "status",
@@ -3370,6 +3336,17 @@
               }
             ],
             "title": "Phone Number Id"
+          },
+          "channel_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Account Id"
           },
           "api_version": {
             "type": "string",
